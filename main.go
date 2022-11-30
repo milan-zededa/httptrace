@@ -154,9 +154,12 @@ func (c *Conn) traceWriteBegin(b []byte, addr net.Addr) {
 	fmt.Printf("[CONN] Conn %s Write %d bytes to %v...\n", c.name, len(b), addr)
 	if c.forResolver {
 		var p dnsmessage.Parser
-		if _, err := p.Start(b); err != nil {
+		header, err := p.Start(b)
+		if err != nil {
 			fmt.Printf("[CONN] Conn %s Write DNS message: %v\n", c.name, err)
 		}
+
+		fmt.Printf("[CONN] Write %s Write DNS message header: %+v; %v\n", c.name, header, err)
 		for {
 			q, err := p.Question()
 			if err == dnsmessage.ErrSectionDone {
@@ -226,6 +229,52 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 
 //--------------------------------------------------------------------------------------
 
+type HTTPBody struct {
+	Name        string
+	WrappedBody io.ReadCloser
+	Length      int
+}
+
+func (b *HTTPBody) Read(p []byte) (n int, err error) {
+	fmt.Printf("[HTTP] %s Read\n", b.Name)
+
+	n, err = b.WrappedBody.Read(p)
+	b.Length += n
+	if err == io.EOF {
+		fmt.Printf("[HTTP] %s has body of size: %d\n", b.Name, b.Length)
+	}
+	return n, err
+}
+
+// TODO: define only when WrappedBody implements it.
+// e.g. (from request.go):
+//
+//	if _, ok := r.(WriterTo); ok {
+//	   return nopCloserWriterTo{r}
+//	}
+func (b *HTTPBody) Write(p []byte) (n int, err error) {
+	fmt.Printf("[HTTP] %s Write\n", b.Name)
+
+	return b.WrappedBody.(io.Writer).Write(p)
+}
+
+func (b *HTTPBody) Close() (err error) {
+	var buf [32]byte
+	var n int
+	for err == nil {
+		n, err = b.WrappedBody.Read(buf[:])
+		b.Length += n
+	}
+	closeErr := b.WrappedBody.Close()
+	if err != nil && err != io.EOF {
+		return err
+	}
+	fmt.Printf("[HTTP] %s has body of size: %d\n", b.Name, b.Length)
+	return closeErr
+}
+
+//--------------------------------------------------------------------------------------
+
 // Transport : transport for HTTP client with tracing
 // One instance per single HTTP request context.
 // We need to make sure that parallel HTTP requests made from the same HTTP client
@@ -258,7 +307,7 @@ func (ct connTuple) String() string {
 }
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	fmt.Printf("[TRANSP] HTTP request: %v\n", req)
+	fmt.Printf("[TRANSP] HTTP request: %v, size=%d\n", req, req.ContentLength)
 	ctx := req.Context()
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		GetConn: func(hostPort string) {
@@ -334,8 +383,14 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		},
 	})
 	req = req.WithContext(ctx)
+	if req.Body != nil {
+		req.Body = &HTTPBody{Name: "Request", WrappedBody: req.Body}
+	}
 	resp, err := t.wrappedT.RoundTrip(req)
 	fmt.Printf("[TRANSP] HTTP response: %v; %v\n", resp, err)
+	if resp.Body != nil {
+		resp.Body = &HTTPBody{Name: "Response", WrappedBody: resp.Body}
+	}
 	return resp, err
 }
 
@@ -711,6 +766,8 @@ func main() {
 
 	client := &http.Client{Transport: transport}
 	client.Timeout = 60 * time.Second
+
+	//http.Transport
 
 	for i := 0; i < reqCount; i++ {
 		ctx := context.Background()
