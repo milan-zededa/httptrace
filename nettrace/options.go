@@ -5,6 +5,32 @@ type TraceOpt interface {
 	isTraceOpt()
 }
 
+// WithLogging : enable logging inside the network tracing engine.
+// When enabled then by default Logrus from Sirupsen will be used
+// (see github.com/sirupsen/logrus), but a custom logger can be provided instead.
+type WithLogging struct {
+	CustomLogger Logger
+}
+
+func (o WithLogging) isTraceOpt() {}
+
+// Logger is used to log noteworthy events happening inside the network tracing engine.
+type Logger interface {
+	// Tracef : formatted log message with info useful for finer-grained debugging.
+	Tracef(format string, args ...interface{})
+	// Noticef : formatted log message with info useful for debugging.
+	Noticef(format string, args ...interface{})
+	// Warningf : formatted log message with a warning.
+	Warningf(format string, args ...interface{})
+	// Errorf : formatted log message with an error.
+	Errorf(format string, args ...interface{})
+	// Fatalf : formatted log message with an error, ending with a call to os.Exit()
+	// with non-zero return value.
+	Fatalf(format string, args ...interface{})
+	// Panicf : formatted log message with an error, raising a panic.
+	Panicf(format string, args ...interface{})
+}
+
 // WithConntrack : obtain and include conntrack entries (provided by netfilter)
 // inside the trace records of TCP and UDP connections (TCPConnTrace.Conntrack
 // and UDPConnTrace.Conntrack).

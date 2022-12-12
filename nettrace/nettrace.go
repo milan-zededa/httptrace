@@ -67,10 +67,10 @@ type DialTrace struct {
 type DialTraces []DialTrace
 
 // Get pointer to the Dial trace with the given ID.
-func (dt DialTraces) Get(id TraceID) *DialTrace {
-	for _, trace := range dt {
-		if trace.TraceID == id {
-			return &trace
+func (traces DialTraces) Get(id TraceID) *DialTrace {
+	for i := range traces {
+		if traces[i].TraceID == id {
+			return &traces[i]
 		}
 	}
 	return nil
@@ -123,10 +123,10 @@ type TCPConnTrace struct {
 type TCPConnTraces []TCPConnTrace
 
 // Get pointer to the TCP connection trace with the given ID.
-func (tct TCPConnTraces) Get(id TraceID) *TCPConnTrace {
-	for _, trace := range tct {
-		if trace.TraceID == id {
-			return &trace
+func (traces TCPConnTraces) Get(id TraceID) *TCPConnTrace {
+	for i := range traces {
+		if traces[i].TraceID == id {
+			return &traces[i]
 		}
 	}
 	return nil
@@ -169,10 +169,10 @@ type UDPConnTrace struct {
 type UDPConnTraces []UDPConnTrace
 
 // Get pointer to the UDP connection trace with the given ID.
-func (uct UDPConnTraces) Get(id TraceID) *UDPConnTrace {
-	for _, trace := range uct {
-		if trace.TraceID == id {
-			return &trace
+func (traces UDPConnTraces) Get(id TraceID) *UDPConnTrace {
+	for i := range traces {
+		if traces[i].TraceID == id {
+			return &traces[i]
 		}
 	}
 	return nil
@@ -199,10 +199,10 @@ type DNSQueryTrace struct {
 type DNSQueryTraces []DNSQueryTrace
 
 // Get pointer to the DNS query trace with the given ID.
-func (dqt DNSQueryTraces) Get(id TraceID) *DNSQueryTrace {
-	for _, trace := range dqt {
-		if trace.TraceID == id {
-			return &trace
+func (traces DNSQueryTraces) Get(id TraceID) *DNSQueryTrace {
+	for i := range traces {
+		if traces[i].TraceID == id {
+			return &traces[i]
 		}
 	}
 	return nil
@@ -307,10 +307,10 @@ type TLSTunnelTrace struct {
 type TLSTunnelTraces []TLSTunnelTrace
 
 // Get pointer to the TLS tunnel trace with the given ID.
-func (ttt TLSTunnelTraces) Get(id TraceID) *TLSTunnelTrace {
-	for _, trace := range ttt {
-		if trace.TraceID == id {
-			return &trace
+func (traces TLSTunnelTraces) Get(id TraceID) *TLSTunnelTrace {
+	for i := range traces {
+		if traces[i].TraceID == id {
+			return &traces[i]
 		}
 	}
 	return nil
@@ -341,7 +341,7 @@ type HTTPReqTrace struct {
 	// ReqHeaders : request header fields.
 	// If tracing of HTTP headers is disabled (which it is by default), then this is
 	// an empty slice.
-	ReqHeaders []HTTPHeader `json:"reqHeaders,omitempty"`
+	ReqHeaders HTTPHeaders `json:"reqHeaders,omitempty"`
 	// ReqContentLen : size of the HTTP request body content.
 	// This may be available even if Content-Length header field is not.
 	// But note that this only counts the part of the content that was actually loaded
@@ -361,7 +361,7 @@ type HTTPReqTrace struct {
 	// RespHeaders : response header fields.
 	// If tracing of HTTP headers is disabled (which it is by default), then this is
 	// an empty slice.
-	RespHeaders []HTTPHeader `json:"respHeaders,omitempty"`
+	RespHeaders HTTPHeaders `json:"respHeaders,omitempty"`
 	// RespContentLen : number of bytes of the HTTP response body received and read
 	// by the caller. This may be available even if Content-Length header field is not.
 	// But note that if the caller didn't read all bytes until EOF and didn't close
@@ -374,10 +374,10 @@ type HTTPReqTrace struct {
 type HTTPReqTraces []HTTPReqTrace
 
 // Get pointer to the HTTP request trace with the given ID.
-func (hrt HTTPReqTraces) Get(id TraceID) *HTTPReqTrace {
-	for _, trace := range hrt {
-		if trace.TraceID == id {
-			return &trace
+func (traces HTTPReqTraces) Get(id TraceID) *HTTPReqTrace {
+	for i := range traces {
+		if traces[i].TraceID == id {
+			return &traces[i]
 		}
 	}
 	return nil
@@ -395,6 +395,21 @@ type HTTPHeader struct {
 	// Just like field value, this can be also hidden (returned as zero) using tracing
 	// options (e.g. if knowing value length is enough to raise security concern).
 	FieldValLen uint32 `json:"fieldValLen"`
+}
+
+// HTTPHeaders is a list of HTTP headers.
+type HTTPHeaders []HTTPHeader
+
+// Get pointer to the HTTP header field with the given name.
+func (headers HTTPHeaders) Get(name string) *HTTPHeader {
+	// According to RFC2616, field names are case-insensitive.
+	name = strings.ToLower(name)
+	for i := range headers {
+		if strings.ToLower(headers[i].FieldName) == name {
+			return &headers[i]
+		}
+	}
+	return nil
 }
 
 // PeerCert : description of a peer certificate.

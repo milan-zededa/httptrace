@@ -109,35 +109,18 @@ func (e *AllNameserversSkipped) Error() string {
 	return fmt.Sprintf("all DNS servers were skipped: %v", e.Nameservers)
 }
 
-// Logger is used to log noteworthy tracing-related events happening inside HTTPClient.
-type Logger interface {
-	// Tracef : formatted log message with info useful for finer-grained debugging.
-	Tracef(format string, args ...interface{})
-	// Noticef : formatted log message with info useful for debugging.
-	Noticef(format string, args ...interface{})
-	// Warningf : formatted log message with a warning.
-	Warningf(format string, args ...interface{})
-	// Errorf : formatted log message with an error.
-	Errorf(format string, args ...interface{})
-	// Fatalf : formatted log message with an error, ending with a call to os.Exit()
-	// with non-zero return value.
-	Fatalf(format string, args ...interface{})
-	// Panicf : formatted log message with an error, raising a panic.
-	Panicf(format string, args ...interface{})
-}
-
 // NewHTTPClient creates a new instance of HTTPClient, enhancing the standard
 // http.Client with tracing capabilities.
 // Tracing starts immediately:
 //   - a background Go routine collecting traces is started
 //   - packet capture starts on selected interfaces if WithPacketCapture option was passed
-func NewHTTPClient(config HTTPClientCfg, log Logger, traceOpts ...TraceOpt) *HTTPClient {
+func NewHTTPClient(config HTTPClientCfg, traceOpts ...TraceOpt) (*HTTPClient, error) {
 	return &HTTPClient{
 		Client: &http.Client{
 			Transport: nil, // TODO
 			Timeout:   config.ReqTimeout,
 		},
-	}
+	}, nil
 }
 
 // GetTrace returns a summary of all network and HTTP trace records (aka HTTPTrace),
