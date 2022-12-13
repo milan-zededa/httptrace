@@ -26,20 +26,22 @@ func TestHTTPTracing(test *testing.T) {
 
 	// Options that do not require administrative privileges.
 	opts := []nettrace.TraceOpt{
-		nettrace.WithLogging{},
-		nettrace.WithHTTPReqTrace{
+		&nettrace.WithLogging{},
+		&nettrace.WithHTTPReqTrace{
 			HeaderFields: nettrace.HdrFieldsOptWithValues,
 		},
-		nettrace.WithSockTrace{},
-		nettrace.WithDNSQueryTrace{},
+		&nettrace.WithSockTrace{},
+		&nettrace.WithDNSQueryTrace{},
 	}
 	client, err := nettrace.NewHTTPClient(nettrace.HTTPClientCfg{
-		PreferHTTP2: true,
-		ReqTimeout:  5 * time.Second,
+		PreferHTTP2:       true,
+		ReqTimeout:        5 * time.Second,
+		DisableKeepAlives: true,
 	}, opts...)
 	t.Expect(err).ToNot(HaveOccurred())
 
 	req, err := http.NewRequest("GET", "https://www.example.com", nil)
+	req.Header.Set("Accept", "text/html")
 	resp, err := client.Do(req)
 	t.Expect(err).ToNot(HaveOccurred())
 	t.Expect(resp).ToNot(BeNil())
@@ -68,21 +70,30 @@ func TestHTTPTracing(test *testing.T) {
 	// Dial trace
 	t.Expect(trace.Dials).To(HaveLen(1)) // no redirects
 	dial := trace.Dials[0]
-	t.Expect(dial.TraceID).ToNot(BeEmpty())
+	t.Expect(dial.TraceID).ToNot(BeZero())
 	relTimeIsInBetween(t, dial.DialBeginAt, traceBeginAsRel, trace.TraceEndAt)
 	relTimeIsInBetween(t, dial.DialEndAt, dial.DialBeginAt, trace.TraceEndAt)
-	t.Expect(dial.NetworkProxy).To(BeEmpty())
-	t.Expect(dial.SourceIP).To(BeEmpty())
-	t.Expect(dial.DstAddress).To(Equal("www.example.com"))
-	t.Expect(dial.EstablishedConn).ToNot(BeEmpty())
+	t.Expect(dial.DialErr).To(BeZero())
+	t.Expect(dial.SourceIP).To(BeZero())
+	t.Expect(dial.DstAddress).To(Equal("www.example.com:443"))
+	t.Expect(dial.ResolverDials).ToNot(BeEmpty())
+	for _, resolvDial := range dial.ResolverDials {
+		relTimeIsInBetween(t, resolvDial.DialBeginAt, dial.DialBeginAt, dial.DialEndAt)
+		relTimeIsInBetween(t, resolvDial.DialEndAt, resolvDial.DialBeginAt, dial.DialEndAt)
+		t.Expect(resolvDial.Nameserver).ToNot(BeZero())
+		if !resolvDial.EstablishedConn.Undefined() {
+			t.Expect(resolvDial.DialErr).To(BeZero())
+			t.Expect(trace.UDPConns.Get(resolvDial.EstablishedConn)).ToNot(BeNil())
+		}
+	}
+	t.Expect(dial.EstablishedConn).ToNot(BeZero())
 	t.Expect(trace.TCPConns.Get(dial.EstablishedConn)).ToNot(BeNil())
 
 	// DNS trace
-	t.Expect(trace.DNSQueries).To(Or(HaveLen(1), HaveLen(2))) // A and possibly also AAAA
+	t.Expect(trace.DNSQueries).ToNot(BeEmpty())
 	for _, dnsQuery := range trace.DNSQueries {
 		t.Expect(dnsQuery.FromDial == dial.TraceID).To(BeTrue())
-		t.Expect(dnsQuery.TraceID).ToNot(BeEmpty())
-		t.Expect(dnsQuery.DNSQueryErr).To(BeEmpty())
+		t.Expect(dnsQuery.TraceID).ToNot(BeZero())
 		udpConn := trace.UDPConns.Get(dnsQuery.Connection)
 		t.Expect(udpConn).ToNot(BeNil())
 
@@ -90,7 +101,7 @@ func TestHTTPTracing(test *testing.T) {
 		dnsMsg := dnsQuery.DNSQueryMsgs[0]
 		relTimeIsInBetween(t, dnsMsg.SentAt, udpConn.SocketCreateAt, udpConn.ConnCloseAt)
 		t.Expect(dnsMsg.Questions).To(HaveLen(1))
-		t.Expect(dnsMsg.Questions[0].Name).To(Equal("www.example.com"))
+		t.Expect(dnsMsg.Questions[0].Name).To(Equal("www.example.com."))
 		t.Expect(dnsMsg.Questions[0].Type).To(Or(
 			Equal(nettrace.DNSResTypeA), Equal(nettrace.DNSResTypeAAAA)))
 		t.Expect(dnsMsg.Truncated).To(BeFalse())
@@ -105,9 +116,9 @@ func TestHTTPTracing(test *testing.T) {
 	}
 
 	// UDP connection trace
-	t.Expect(trace.UDPConns).To(Or(HaveLen(1), HaveLen(2))) // DNS for A and possibly also AAAA
+	t.Expect(trace.UDPConns).ToNot(BeEmpty())
 	for _, udpConn := range trace.UDPConns {
-		t.Expect(udpConn.TraceID).ToNot(BeEmpty())
+		t.Expect(udpConn.TraceID).ToNot(BeZero())
 		t.Expect(udpConn.FromDial == dial.TraceID).To(BeTrue())
 		relTimeIsInBetween(t, udpConn.SocketCreateAt, dial.DialBeginAt, dial.DialEndAt)
 		relTimeIsInBetween(t, udpConn.ConnCloseAt, udpConn.SocketCreateAt, dial.DialEndAt)
@@ -126,80 +137,97 @@ func TestHTTPTracing(test *testing.T) {
 		t.Expect(udpConn.TotalSentBytes).ToNot(BeZero())
 	}
 
-	// TCP connection trace
-	t.Expect(trace.TCPConns).To(HaveLen(1))
-	tcpConn := trace.TCPConns[0]
-	t.Expect(tcpConn.TraceID).ToNot(BeEmpty())
-	t.Expect(tcpConn.FromDial == dial.TraceID).To(BeTrue())
-	t.Expect(tcpConn.Reused).To(BeFalse())
-	relTimeIsInBetween(t, tcpConn.HandshakeBeginAt, dial.DialBeginAt, dial.DialEndAt)
-	relTimeIsInBetween(t, tcpConn.HandshakeEndAt, tcpConn.HandshakeBeginAt, dial.DialEndAt)
-	relTimeIsInBetween(t, tcpConn.ConnCloseAt, tcpConn.HandshakeEndAt, dial.DialEndAt)
-	t.Expect(tcpConn.HandshakeErr).To(BeEmpty())
-	t.Expect(net.ParseIP(tcpConn.AddrTuple.SrcIP)).ToNot(BeNil())
-	t.Expect(net.ParseIP(tcpConn.AddrTuple.DstIP)).ToNot(BeNil())
-	t.Expect(tcpConn.AddrTuple.SrcPort).ToNot(BeZero())
-	t.Expect(tcpConn.AddrTuple.DstPort).ToNot(BeZero())
-	t.Expect(tcpConn.SocketTrace).ToNot(BeNil())
-	t.Expect(tcpConn.SocketTrace.SocketOps).ToNot(BeEmpty())
-	for _, socketOp := range tcpConn.SocketTrace.SocketOps {
-		relTimeIsInBetween(t, socketOp.CallAt, tcpConn.HandshakeEndAt, tcpConn.ConnCloseAt)
-		relTimeIsInBetween(t, socketOp.ReturnAt, socketOp.CallAt, tcpConn.ConnCloseAt)
+	// HTTP request trace
+	t.Expect(trace.HTTPRequests).To(HaveLen(1))
+	httpReq := trace.HTTPRequests[0]
+	t.Expect(httpReq.TraceID).ToNot(BeZero())
+	t.Expect(httpReq.TCPConn.Undefined()).To(BeFalse())
+	usedTCPConn := trace.TCPConns.Get(httpReq.TCPConn)
+	t.Expect(usedTCPConn).ToNot(BeNil())
+	t.Expect(httpReq.ProtoMajor).To(BeEquivalentTo(2))
+	t.Expect(httpReq.ProtoMinor).To(BeEquivalentTo(0))
+	t.Expect(httpReq.NetworkProxy).To(BeZero())
+	relTimeIsInBetween(t, httpReq.ReqSentAt, traceBeginAsRel, trace.TraceEndAt)
+	t.Expect(httpReq.ReqError).To(BeZero())
+	t.Expect(httpReq.ReqMethod).To(Equal("GET"))
+	t.Expect(httpReq.ReqURL).To(Equal("https://www.example.com"))
+	t.Expect(httpReq.ReqHeader).ToNot(BeEmpty())
+	acceptHdr := httpReq.ReqHeader.Get("Accept")
+	t.Expect(acceptHdr).ToNot(BeNil())
+	t.Expect(acceptHdr.FieldVal).To(Equal("text/html"))
+	t.Expect(acceptHdr.FieldValLen).To(BeEquivalentTo(len(acceptHdr.FieldVal)))
+	t.Expect(httpReq.ReqContentLen).To(BeZero())
+	relTimeIsInBetween(t, httpReq.RespRecvAt, httpReq.ReqSentAt, trace.TraceEndAt)
+	t.Expect(httpReq.RespStatusCode).To(Equal(200))
+	t.Expect(httpReq.RespHeader).ToNot(BeEmpty())
+	contentType := httpReq.RespHeader.Get("content-type")
+	t.Expect(contentType).ToNot(BeNil())
+	t.Expect(contentType.FieldVal).To(ContainSubstring("text/html"))
+	t.Expect(contentType.FieldValLen).To(BeEquivalentTo(len(contentType.FieldVal)))
+	t.Expect(httpReq.RespContentLen).ToNot(BeZero())
+
+	// TCP connection traces
+	// There can be multiple parallel connection attempts made as per Happy Eyeballs algorithm.
+	t.Expect(trace.TCPConns).ToNot(BeEmpty())
+	for _, tcpConn := range trace.TCPConns {
+		t.Expect(tcpConn.TraceID).ToNot(BeZero())
+		t.Expect(tcpConn.FromDial == dial.TraceID).To(BeTrue())
+		t.Expect(tcpConn.Reused).To(BeFalse())
+		t.Expect(net.ParseIP(tcpConn.AddrTuple.SrcIP)).ToNot(BeNil())
+		t.Expect(net.ParseIP(tcpConn.AddrTuple.DstIP)).ToNot(BeNil())
+		t.Expect(tcpConn.AddrTuple.SrcPort).ToNot(BeZero()) // TODO: this may fail for IPv6
+		t.Expect(tcpConn.AddrTuple.DstPort).ToNot(BeZero())
+		t.Expect(tcpConn.Conntract).To(BeNil()) // WithConntrack requires root privileges
+		if tcpConn.TraceID != usedTCPConn.TraceID {
+			// Not used for HTTP request in the end.
+			continue
+		}
+		relTimeIsInBetween(t, tcpConn.HandshakeBeginAt, dial.DialBeginAt, dial.DialEndAt)
+		relTimeIsInBetween(t, tcpConn.HandshakeEndAt, tcpConn.HandshakeBeginAt, dial.DialEndAt)
+		relTimeIsInBetween(t, tcpConn.ConnCloseAt, tcpConn.HandshakeEndAt, trace.TraceEndAt)
+		t.Expect(tcpConn.SocketTrace).ToNot(BeNil())
+		t.Expect(tcpConn.SocketTrace.SocketOps).ToNot(BeEmpty())
+		for _, socketOp := range tcpConn.SocketTrace.SocketOps {
+			relTimeIsInBetween(t, socketOp.CallAt, tcpConn.HandshakeEndAt, tcpConn.ConnCloseAt)
+			relTimeIsInBetween(t, socketOp.ReturnAt, socketOp.CallAt, tcpConn.ConnCloseAt)
+		}
+		t.Expect(tcpConn.TotalRecvBytes).ToNot(BeZero())
+		t.Expect(tcpConn.TotalSentBytes).ToNot(BeZero())
 	}
-	t.Expect(tcpConn.Conntract).To(BeNil()) // WithConntrack requires root privileges
-	t.Expect(tcpConn.TotalRecvBytes).ToNot(BeZero())
-	t.Expect(tcpConn.TotalSentBytes).ToNot(BeZero())
 
 	// TLS tunnel trace
 	t.Expect(trace.TLSTunnels).To(HaveLen(1))
 	tlsTun := trace.TLSTunnels[0]
-	t.Expect(tlsTun.TraceID).ToNot(BeEmpty())
-	t.Expect(tlsTun.TCPConn == tcpConn.TraceID).To(BeTrue())
+	t.Expect(tlsTun.TraceID).ToNot(BeZero())
+	t.Expect(tlsTun.TCPConn == usedTCPConn.TraceID).To(BeTrue())
 	t.Expect(tlsTun.DidResume).To(BeFalse())
-	relTimeIsInBetween(t, tlsTun.HandshakeBeginAt, tcpConn.HandshakeEndAt, tcpConn.ConnCloseAt)
-	relTimeIsInBetween(t, tlsTun.HandshakeEndAt, tlsTun.HandshakeBeginAt, tcpConn.ConnCloseAt)
-	t.Expect(tlsTun.HandshakeErr).To(BeEmpty())
+	relTimeIsInBetween(t, tlsTun.HandshakeBeginAt, usedTCPConn.HandshakeEndAt, usedTCPConn.ConnCloseAt)
+	relTimeIsInBetween(t, tlsTun.HandshakeEndAt, tlsTun.HandshakeBeginAt, usedTCPConn.ConnCloseAt)
+	t.Expect(tlsTun.HandshakeErr).To(BeZero())
 	t.Expect(tlsTun.ServerName).To(Equal("www.example.com"))
 	t.Expect(tlsTun.NegotiatedProto).To(Equal("h2"))
-	t.Expect(tlsTun.CipherSuite).ToNot(BeEmpty())
-	// TODO (for every peer certificate):
-	t.Expect(tlsTun.PeerCerts).To(HaveLen(3))
+	t.Expect(tlsTun.CipherSuite).ToNot(BeZero())
+	t.Expect(tlsTun.PeerCerts).To(HaveLen(2))
 	peerCert := tlsTun.PeerCerts[0]
-	t.Expect(peerCert.IsCA).To(BeTrue())
-	t.Expect(peerCert.Subject).To(Equal("TODO"))
-	t.Expect(peerCert.Issuer).To(Equal("TODO"))
+	t.Expect(peerCert.IsCA).To(BeFalse())
+	t.Expect(peerCert.Subject).To(Equal("CN=www.example.org,O=Internet Corporation for Assigned Names and Numbers,L=Los Angeles,ST=California,C=US"))
+	t.Expect(peerCert.Issuer).To(Equal("CN=DigiCert TLS RSA SHA256 2020 CA1,O=DigiCert Inc,C=US"))
 	t.Expect(peerCert.NotBefore.Undefined()).To(BeFalse())
 	t.Expect(peerCert.NotBefore.IsRel).To(BeFalse())
 	t.Expect(peerCert.NotAfter.Undefined()).To(BeFalse())
 	t.Expect(peerCert.NotAfter.IsRel).To(BeFalse())
 	t.Expect(peerCert.NotBefore.Abs.Before(time.Now())).To(BeTrue())
 	t.Expect(peerCert.NotAfter.Abs.After(time.Now())).To(BeTrue())
-
-	// HTTP request trace
-	t.Expect(trace.HTTPRequests).To(HaveLen(1))
-	httpReq := trace.HTTPRequests[0]
-	t.Expect(httpReq.TraceID).ToNot(BeEmpty())
-	t.Expect(httpReq.TCPConn == tcpConn.TraceID).To(BeTrue())
-	t.Expect(httpReq.ProtoMajor).To(Equal(2))
-	t.Expect(httpReq.ProtoMinor).To(Equal(0))
-	relTimeIsInBetween(t, httpReq.ReqSentAt, traceBeginAsRel, trace.TraceEndAt)
-	t.Expect(httpReq.ReqError).To(BeEmpty())
-	t.Expect(httpReq.ReqMethod).To(Equal("GET"))
-	t.Expect(httpReq.ReqURL).To(Equal("https://www.example.com"))
-	t.Expect(httpReq.ReqHeaders).ToNot(BeEmpty())
-	host := httpReq.ReqHeaders.Get("host")
-	t.Expect(host).ToNot(BeNil())
-	t.Expect(host.FieldVal).To(Equal("www.example.com"))
-	t.Expect(host.FieldValLen).To(BeEquivalentTo(len(host.FieldVal)))
-	t.Expect(httpReq.ReqContentLen).To(BeZero())
-	relTimeIsInBetween(t, httpReq.RespRecvAt, httpReq.ReqSentAt, trace.TraceEndAt)
-	t.Expect(httpReq.RespStatusCode).To(Equal(200))
-	t.Expect(httpReq.RespHeaders).ToNot(BeEmpty())
-	contentType := httpReq.RespHeaders.Get("content-type")
-	t.Expect(contentType).ToNot(BeNil())
-	t.Expect(contentType.FieldVal).To(ContainSubstring("text/html"))
-	t.Expect(contentType.FieldValLen).To(BeEquivalentTo(len(contentType.FieldVal)))
-	t.Expect(httpReq.RespContentLen).ToNot(BeZero())
+	peerCert = tlsTun.PeerCerts[1]
+	t.Expect(peerCert.IsCA).To(BeTrue())
+	t.Expect(peerCert.Subject).To(Equal("CN=DigiCert TLS RSA SHA256 2020 CA1,O=DigiCert Inc,C=US"))
+	t.Expect(peerCert.Issuer).To(Equal("CN=DigiCert Global Root CA,OU=www.digicert.com,O=DigiCert Inc,C=US"))
+	t.Expect(peerCert.NotBefore.Undefined()).To(BeFalse())
+	t.Expect(peerCert.NotBefore.IsRel).To(BeFalse())
+	t.Expect(peerCert.NotAfter.Undefined()).To(BeFalse())
+	t.Expect(peerCert.NotAfter.IsRel).To(BeFalse())
+	t.Expect(peerCert.NotBefore.Abs.Before(time.Now())).To(BeTrue())
+	t.Expect(peerCert.NotAfter.Abs.After(time.Now())).To(BeTrue())
 
 	err = client.Close()
 	t.Expect(err).ToNot(HaveOccurred())
@@ -212,8 +240,8 @@ func TestTLSCertErrors(test *testing.T) {
 
 	// Options required for TLS tracing.
 	opts := []nettrace.TraceOpt{
-		nettrace.WithLogging{},
-		nettrace.WithHTTPReqTrace{},
+		&nettrace.WithLogging{},
+		&nettrace.WithHTTPReqTrace{},
 	}
 	client, err := nettrace.NewHTTPClient(nettrace.HTTPClientCfg{
 		PreferHTTP2: true,
@@ -230,12 +258,12 @@ func TestTLSCertErrors(test *testing.T) {
 	t.Expect(err).ToNot(HaveOccurred())
 	t.Expect(trace.TLSTunnels).To(HaveLen(1))
 	tlsTun := trace.TLSTunnels[0]
-	t.Expect(tlsTun.HandshakeErr).ToNot(BeEmpty())
+	t.Expect(tlsTun.HandshakeErr).ToNot(BeZero())
 	t.Expect(tlsTun.PeerCerts).To(HaveLen(1)) // when TLS fails, we only get the problematic cert
 	peerCert := tlsTun.PeerCerts[0]
 	t.Expect(peerCert.IsCA).To(BeFalse())
-	t.Expect(peerCert.Issuer).To(Equal("TODO"))
-	t.Expect(peerCert.Subject).To(Equal("TODO"))
+	t.Expect(peerCert.Issuer).To(Equal("CN=COMODO RSA Domain Validation Secure Server CA,O=COMODO CA Limited,L=Salford,ST=Greater Manchester,C=GB"))
+	t.Expect(peerCert.Subject).To(Equal("CN=*.badssl.com,OU=Domain Control Validated+OU=PositiveSSL Wildcard"))
 	t.Expect(peerCert.NotBefore.Abs.IsZero()).To(BeFalse())
 	t.Expect(peerCert.NotAfter.Abs.Before(time.Now())).To(BeTrue())
 	err = client.ClearTrace()
@@ -250,12 +278,12 @@ func TestTLSCertErrors(test *testing.T) {
 	t.Expect(err).ToNot(HaveOccurred())
 	t.Expect(trace.TLSTunnels).To(HaveLen(1))
 	tlsTun = trace.TLSTunnels[0]
-	t.Expect(tlsTun.HandshakeErr).ToNot(BeEmpty())
+	t.Expect(tlsTun.HandshakeErr).ToNot(BeZero())
 	t.Expect(tlsTun.PeerCerts).To(HaveLen(1))
 	peerCert = tlsTun.PeerCerts[0]
 	t.Expect(peerCert.IsCA).To(BeFalse())
-	t.Expect(peerCert.Issuer).To(Equal("TODO"))
-	t.Expect(peerCert.Subject).To(Equal("TODO"))
+	t.Expect(peerCert.Issuer).To(Equal("CN=R3,O=Let's Encrypt,C=US"))
+	t.Expect(peerCert.Subject).To(Equal("CN=*.badssl.com"))
 	t.Expect(peerCert.NotBefore.Abs.Before(time.Now())).To(BeTrue())
 	t.Expect(peerCert.NotAfter.Abs.After(time.Now())).To(BeTrue())
 	err = client.ClearTrace()
@@ -270,12 +298,12 @@ func TestTLSCertErrors(test *testing.T) {
 	t.Expect(err).ToNot(HaveOccurred())
 	t.Expect(trace.TLSTunnels).To(HaveLen(1))
 	tlsTun = trace.TLSTunnels[0]
-	t.Expect(tlsTun.HandshakeErr).ToNot(BeEmpty())
+	t.Expect(tlsTun.HandshakeErr).ToNot(BeZero())
 	t.Expect(tlsTun.PeerCerts).To(HaveLen(1))
 	peerCert = tlsTun.PeerCerts[0]
 	t.Expect(peerCert.IsCA).To(BeTrue())
-	t.Expect(peerCert.Issuer).To(Equal("TODO"))
-	t.Expect(peerCert.Subject).To(Equal("TODO"))
+	t.Expect(peerCert.Issuer).To(Equal("CN=BadSSL Untrusted Root Certificate Authority,O=BadSSL,L=San Francisco,ST=California,C=US"))
+	t.Expect(peerCert.Subject).To(Equal("CN=BadSSL Untrusted Root Certificate Authority,O=BadSSL,L=San Francisco,ST=California,C=US"))
 	t.Expect(peerCert.NotBefore.Abs.Before(time.Now())).To(BeTrue())
 	t.Expect(peerCert.NotAfter.Abs.After(time.Now())).To(BeTrue())
 	err = client.ClearTrace()
@@ -291,19 +319,19 @@ func TestNonExistentHost(test *testing.T) {
 
 	// Options that do not require administrative privileges.
 	opts := []nettrace.TraceOpt{
-		nettrace.WithLogging{},
-		nettrace.WithHTTPReqTrace{
+		&nettrace.WithLogging{},
+		&nettrace.WithHTTPReqTrace{
 			HeaderFields: nettrace.HdrFieldsOptWithValues,
 		},
-		nettrace.WithSockTrace{},
-		nettrace.WithDNSQueryTrace{},
+		&nettrace.WithSockTrace{},
+		&nettrace.WithDNSQueryTrace{},
 	}
 	client, err := nettrace.NewHTTPClient(nettrace.HTTPClientCfg{
 		ReqTimeout: 5 * time.Second,
 	}, opts...)
 	t.Expect(err).ToNot(HaveOccurred())
 
-	req, err := http.NewRequest("GET", "https://non-existent-host", nil)
+	req, err := http.NewRequest("GET", "https://non-existent-host.com", nil)
 	resp, err := client.Do(req)
 	t.Expect(err).To(HaveOccurred())
 	t.Expect(resp).To(BeNil())
@@ -314,18 +342,28 @@ func TestNonExistentHost(test *testing.T) {
 	// Dial trace
 	t.Expect(trace.Dials).To(HaveLen(1)) // one failed Dial (DNS failed)
 	dial := trace.Dials[0]
-	t.Expect(dial.TraceID).ToNot(BeEmpty())
+	t.Expect(dial.TraceID).ToNot(BeZero())
 	relTimeIsInBetween(t, dial.DialBeginAt, traceBeginAsRel, trace.TraceEndAt)
 	relTimeIsInBetween(t, dial.DialEndAt, dial.DialBeginAt, trace.TraceEndAt)
-	t.Expect(dial.DstAddress).To(Equal("non-existent-host"))
-	t.Expect(dial.EstablishedConn).To(BeEmpty())
+	t.Expect(dial.DstAddress).To(Equal("non-existent-host.com:443"))
+	t.Expect(dial.ResolverDials).ToNot(BeEmpty())
+	for _, resolvDial := range dial.ResolverDials {
+		relTimeIsInBetween(t, resolvDial.DialBeginAt, dial.DialBeginAt, dial.DialEndAt)
+		relTimeIsInBetween(t, resolvDial.DialEndAt, resolvDial.DialBeginAt, dial.DialEndAt)
+		t.Expect(resolvDial.Nameserver).ToNot(BeZero())
+		if !resolvDial.EstablishedConn.Undefined() {
+			t.Expect(resolvDial.DialErr).To(BeZero())
+			t.Expect(trace.UDPConns.Get(resolvDial.EstablishedConn)).ToNot(BeNil())
+		}
+	}
+	t.Expect(dial.DialErr).ToNot(BeZero())
+	t.Expect(dial.EstablishedConn).To(BeZero())
 
 	// DNS trace
-	t.Expect(trace.DNSQueries).To(Or(HaveLen(1), HaveLen(2))) // A and possibly also AAAA
+	t.Expect(trace.DNSQueries).ToNot(BeEmpty())
 	for _, dnsQuery := range trace.DNSQueries {
 		t.Expect(dnsQuery.FromDial == dial.TraceID).To(BeTrue())
-		t.Expect(dnsQuery.TraceID).ToNot(BeEmpty())
-		t.Expect(dnsQuery.DNSQueryErr).ToNot(BeEmpty())
+		t.Expect(dnsQuery.TraceID).ToNot(BeZero())
 		udpConn := trace.UDPConns.Get(dnsQuery.Connection)
 		t.Expect(udpConn).ToNot(BeNil())
 
@@ -333,7 +371,7 @@ func TestNonExistentHost(test *testing.T) {
 		dnsMsg := dnsQuery.DNSQueryMsgs[0]
 		relTimeIsInBetween(t, dnsMsg.SentAt, udpConn.SocketCreateAt, udpConn.ConnCloseAt)
 		t.Expect(dnsMsg.Questions).To(HaveLen(1))
-		t.Expect(dnsMsg.Questions[0].Name).To(Equal("non-existent-host"))
+		t.Expect(dnsMsg.Questions[0].Name).To(Equal("non-existent-host.com."))
 		t.Expect(dnsMsg.Questions[0].Type).To(Or(
 			Equal(nettrace.DNSResTypeA), Equal(nettrace.DNSResTypeAAAA)))
 		t.Expect(dnsMsg.Truncated).To(BeFalse())
@@ -348,9 +386,9 @@ func TestNonExistentHost(test *testing.T) {
 	}
 
 	// UDP connection trace
-	t.Expect(trace.UDPConns).To(Or(HaveLen(1), HaveLen(2))) // DNS for A and possibly also AAAA
+	t.Expect(trace.UDPConns).ToNot(BeEmpty())
 	for _, udpConn := range trace.UDPConns {
-		t.Expect(udpConn.TraceID).ToNot(BeEmpty())
+		t.Expect(udpConn.TraceID).ToNot(BeZero())
 		t.Expect(udpConn.FromDial == dial.TraceID).To(BeTrue())
 		relTimeIsInBetween(t, udpConn.SocketCreateAt, dial.DialBeginAt, dial.DialEndAt)
 		relTimeIsInBetween(t, udpConn.ConnCloseAt, udpConn.SocketCreateAt, dial.DialEndAt)
@@ -378,23 +416,19 @@ func TestNonExistentHost(test *testing.T) {
 	// HTTP request trace
 	t.Expect(trace.HTTPRequests).To(HaveLen(1))
 	httpReq := trace.HTTPRequests[0]
-	t.Expect(httpReq.TraceID).ToNot(BeEmpty())
-	t.Expect(httpReq.TCPConn).To(BeEmpty())
-	t.Expect(httpReq.ProtoMajor).To(BeZero())
-	t.Expect(httpReq.ProtoMinor).To(BeZero())
+	t.Expect(httpReq.TraceID).ToNot(BeZero())
+	t.Expect(httpReq.TCPConn).To(BeZero())
+	t.Expect(httpReq.ProtoMajor).To(BeEquivalentTo(1))
+	t.Expect(httpReq.ProtoMinor).To(BeEquivalentTo(1))
 	relTimeIsInBetween(t, httpReq.ReqSentAt, traceBeginAsRel, trace.TraceEndAt)
-	t.Expect(httpReq.ReqError).ToNot(BeEmpty())
+	t.Expect(httpReq.ReqError).ToNot(BeZero())
 	t.Expect(httpReq.ReqMethod).To(Equal("GET"))
-	t.Expect(httpReq.ReqURL).To(Equal("https://non-existent-host"))
-	t.Expect(httpReq.ReqHeaders).ToNot(BeEmpty())
-	host := httpReq.ReqHeaders.Get("host")
-	t.Expect(host).ToNot(BeNil())
-	t.Expect(host.FieldVal).To(Equal("non-existent-host"))
-	t.Expect(host.FieldValLen).To(BeEquivalentTo(len(host.FieldVal)))
+	t.Expect(httpReq.ReqURL).To(Equal("https://non-existent-host.com"))
+	t.Expect(httpReq.ReqHeader).To(BeEmpty())
 	t.Expect(httpReq.ReqContentLen).To(BeZero())
 	t.Expect(httpReq.RespRecvAt.Undefined()).To(BeTrue())
 	t.Expect(httpReq.RespStatusCode).To(BeZero())
-	t.Expect(httpReq.RespHeaders).To(BeEmpty())
+	t.Expect(httpReq.RespHeader).To(BeEmpty())
 	t.Expect(httpReq.RespContentLen).To(BeZero())
 
 	err = client.Close()
@@ -407,12 +441,12 @@ func TestUnresponsiveDest(test *testing.T) {
 
 	// Options that do not require administrative privileges.
 	opts := []nettrace.TraceOpt{
-		nettrace.WithLogging{},
-		nettrace.WithHTTPReqTrace{
+		&nettrace.WithLogging{},
+		&nettrace.WithHTTPReqTrace{
 			HeaderFields: nettrace.HdrFieldsOptWithValues,
 		},
-		nettrace.WithSockTrace{},
-		nettrace.WithDNSQueryTrace{},
+		&nettrace.WithSockTrace{},
+		&nettrace.WithDNSQueryTrace{},
 	}
 	client, err := nettrace.NewHTTPClient(nettrace.HTTPClientCfg{
 		ReqTimeout: 5 * time.Second,
@@ -423,6 +457,7 @@ func TestUnresponsiveDest(test *testing.T) {
 	resp, err := client.Do(req)
 	t.Expect(err).To(HaveOccurred())
 	t.Expect(resp).To(BeNil())
+	time.Sleep(time.Second)
 	trace, _, err := client.GetTrace("unresponsive dest")
 	t.Expect(err).ToNot(HaveOccurred())
 	traceBeginAsRel := nettrace.Timestamp{IsRel: true, Rel: 0}
@@ -430,11 +465,14 @@ func TestUnresponsiveDest(test *testing.T) {
 	// Dial trace
 	t.Expect(trace.Dials).To(HaveLen(1)) // one failed Dial (DNS failed)
 	dial := trace.Dials[0]
-	t.Expect(dial.TraceID).ToNot(BeEmpty())
+	t.Expect(dial.TraceID).ToNot(BeZero())
 	relTimeIsInBetween(t, dial.DialBeginAt, traceBeginAsRel, trace.TraceEndAt)
 	relTimeIsInBetween(t, dial.DialEndAt, dial.DialBeginAt, trace.TraceEndAt)
-	t.Expect(dial.DstAddress).To(Equal("198.51.100.100"))
-	t.Expect(dial.EstablishedConn).To(BeEmpty())
+	relTimeIsInBetween(t, dial.CtxCloseAt, dial.DialBeginAt, trace.TraceEndAt)
+	t.Expect(dial.DstAddress).To(Equal("198.51.100.100:443"))
+	t.Expect(dial.ResolverDials).To(BeEmpty())
+	t.Expect(dial.DialErr).ToNot(BeZero())
+	t.Expect(dial.EstablishedConn).To(BeZero())
 
 	// DNS trace
 	t.Expect(trace.DNSQueries).To(BeEmpty())
@@ -445,18 +483,18 @@ func TestUnresponsiveDest(test *testing.T) {
 	// TCP connection trace
 	t.Expect(trace.TCPConns).To(HaveLen(1))
 	tcpConn := trace.TCPConns[0]
-	t.Expect(tcpConn.TraceID).ToNot(BeEmpty())
+	t.Expect(tcpConn.TraceID).ToNot(BeZero())
 	t.Expect(tcpConn.FromDial == dial.TraceID).To(BeTrue())
 	t.Expect(tcpConn.Reused).To(BeFalse())
 	relTimeIsInBetween(t, tcpConn.HandshakeBeginAt, dial.DialBeginAt, dial.DialEndAt)
-	t.Expect(tcpConn.HandshakeEndAt.Undefined()).To(BeTrue())
-	relTimeIsInBetween(t, tcpConn.ConnCloseAt, tcpConn.HandshakeBeginAt, dial.DialEndAt)
-	t.Expect(tcpConn.HandshakeErr).ToNot(BeEmpty())
+	// killed from outside of Dial
+	relTimeIsInBetween(t, tcpConn.HandshakeEndAt, tcpConn.HandshakeBeginAt, trace.TraceEndAt)
+	t.Expect(tcpConn.ConnCloseAt.Undefined()).To(BeTrue())
 	t.Expect(net.ParseIP(tcpConn.AddrTuple.SrcIP)).ToNot(BeNil())
 	t.Expect(net.ParseIP(tcpConn.AddrTuple.DstIP)).ToNot(BeNil())
 	t.Expect(tcpConn.AddrTuple.SrcPort).ToNot(BeZero()) // btw. not easy to get when TLS handshake fails
 	t.Expect(tcpConn.AddrTuple.DstPort).ToNot(BeZero())
-	t.Expect(tcpConn.SocketTrace).To(BeEmpty())
+	t.Expect(tcpConn.SocketTrace).To(BeZero())
 	t.Expect(tcpConn.Conntract).To(BeNil())
 	t.Expect(tcpConn.TotalRecvBytes).To(BeZero())
 	t.Expect(tcpConn.TotalSentBytes).To(BeZero())
@@ -467,24 +505,145 @@ func TestUnresponsiveDest(test *testing.T) {
 	// HTTP request trace
 	t.Expect(trace.HTTPRequests).To(HaveLen(1))
 	httpReq := trace.HTTPRequests[0]
-	t.Expect(httpReq.TraceID).ToNot(BeEmpty())
-	t.Expect(httpReq.TCPConn).To(BeEmpty())
-	t.Expect(httpReq.ProtoMajor).To(BeZero())
-	t.Expect(httpReq.ProtoMinor).To(BeZero())
+	t.Expect(httpReq.TraceID).ToNot(BeZero())
+	t.Expect(httpReq.TCPConn).To(BeZero())
+	t.Expect(httpReq.ProtoMajor).To(BeEquivalentTo(1))
+	t.Expect(httpReq.ProtoMinor).To(BeEquivalentTo(1))
 	relTimeIsInBetween(t, httpReq.ReqSentAt, traceBeginAsRel, trace.TraceEndAt)
-	t.Expect(httpReq.ReqError).ToNot(BeEmpty())
+	t.Expect(httpReq.ReqError).ToNot(BeZero())
 	t.Expect(httpReq.ReqMethod).To(Equal("GET"))
 	t.Expect(httpReq.ReqURL).To(Equal("https://198.51.100.100"))
-	t.Expect(httpReq.ReqHeaders).ToNot(BeEmpty())
-	host := httpReq.ReqHeaders.Get("host")
-	t.Expect(host).ToNot(BeNil())
-	t.Expect(host.FieldVal).To(Equal("198.51.100.100"))
-	t.Expect(host.FieldValLen).To(BeEquivalentTo(len(host.FieldVal)))
+	t.Expect(httpReq.ReqHeader).To(BeEmpty())
 	t.Expect(httpReq.ReqContentLen).To(BeZero())
 	t.Expect(httpReq.RespRecvAt.Undefined()).To(BeTrue())
 	t.Expect(httpReq.RespStatusCode).To(BeZero())
-	t.Expect(httpReq.RespHeaders).To(BeEmpty())
+	t.Expect(httpReq.RespHeader).To(BeEmpty())
 	t.Expect(httpReq.RespContentLen).To(BeZero())
+
+	err = client.Close()
+	t.Expect(err).ToNot(HaveOccurred())
+}
+
+func TestReusedTCPConn(test *testing.T) {
+	t := NewWithT(test)
+
+	// Options that do not require administrative privileges.
+	opts := []nettrace.TraceOpt{
+		&nettrace.WithLogging{},
+		&nettrace.WithHTTPReqTrace{
+			HeaderFields: nettrace.HdrFieldsOptWithValues,
+		},
+		&nettrace.WithSockTrace{},
+		&nettrace.WithDNSQueryTrace{},
+	}
+	client, err := nettrace.NewHTTPClient(nettrace.HTTPClientCfg{
+		DisableKeepAlives: false, // allow TCP conn to be reused between HTTP requests
+	}, opts...)
+	t.Expect(err).ToNot(HaveOccurred())
+
+	// First GET request
+	req, err := http.NewRequest("GET", "https://www.example.com", nil)
+	resp, err := client.Do(req)
+	t.Expect(err).ToNot(HaveOccurred())
+	t.Expect(resp).ToNot(BeNil())
+	t.Expect(resp.StatusCode).To(Equal(200))
+	t.Expect(resp.Body).ToNot(BeNil())
+	body := new(strings.Builder)
+	_, err = io.Copy(body, resp.Body)
+	t.Expect(err).ToNot(HaveOccurred())
+	err = resp.Body.Close()
+	t.Expect(err).ToNot(HaveOccurred())
+
+	trace, _, err := client.GetTrace("GET www.example.com over HTTPS for the first time")
+	t.Expect(err).ToNot(HaveOccurred())
+
+	// Dial trace
+	t.Expect(trace.Dials).To(HaveLen(1)) // no redirects
+	dial := trace.Dials[0]
+	t.Expect(dial.TraceID).ToNot(BeZero())
+	t.Expect(dial.DstAddress).To(Equal("www.example.com:443"))
+
+	// HTTP request trace
+	t.Expect(trace.HTTPRequests).To(HaveLen(1))
+	httpReq := trace.HTTPRequests[0]
+	t.Expect(httpReq.TraceID).ToNot(BeZero())
+	t.Expect(httpReq.TCPConn.Undefined()).To(BeFalse())
+	usedTCPConn := trace.TCPConns.Get(httpReq.TCPConn)
+	t.Expect(usedTCPConn).ToNot(BeNil())
+	t.Expect(usedTCPConn.FromDial == dial.TraceID).To(BeTrue())
+	t.Expect(usedTCPConn.Reused).To(BeFalse())
+	t.Expect(usedTCPConn.ConnCloseAt.Undefined()).To(BeTrue())
+	t.Expect(usedTCPConn.TotalRecvBytes).ToNot(BeZero())
+	t.Expect(usedTCPConn.TotalSentBytes).ToNot(BeZero())
+
+	// TLS tunnel trace.
+	t.Expect(trace.TLSTunnels).To(HaveLen(1))
+	tlsTun := trace.TLSTunnels[0]
+	t.Expect(tlsTun.TraceID).ToNot(BeZero())
+	t.Expect(tlsTun.TCPConn == usedTCPConn.TraceID).To(BeTrue())
+
+	// Idle TCP connection should not be removed from the trace
+	err = client.ClearTrace()
+	t.Expect(err).ToNot(HaveOccurred())
+
+	// Second request to the same destination
+	req, err = http.NewRequest("GET", "https://www.example.com", nil)
+	resp, err = client.Do(req)
+	t.Expect(err).ToNot(HaveOccurred())
+	t.Expect(resp).ToNot(BeNil())
+	t.Expect(resp.StatusCode).To(Equal(200))
+	t.Expect(resp.Body).ToNot(BeNil())
+	body = new(strings.Builder)
+	_, err = io.Copy(body, resp.Body)
+	t.Expect(err).ToNot(HaveOccurred())
+	err = resp.Body.Close()
+	t.Expect(err).ToNot(HaveOccurred())
+
+	trace, _, err = client.GetTrace("GET www.example.com over HTTPS for the second time")
+	t.Expect(err).ToNot(HaveOccurred())
+	traceBeginAsRel := nettrace.Timestamp{IsRel: true, Rel: 0}
+
+	// No dialing this time - connection is reused.
+	t.Expect(trace.Dials).To(BeEmpty())
+	t.Expect(trace.DNSQueries).To(BeEmpty())
+	t.Expect(trace.UDPConns).To(BeEmpty())
+	t.Expect(trace.TLSTunnels).To(BeEmpty())
+
+	// HTTP request trace
+	t.Expect(trace.HTTPRequests).To(HaveLen(1))
+	httpReq = trace.HTTPRequests[0]
+	t.Expect(httpReq.TraceID).ToNot(BeZero())
+	t.Expect(httpReq.TCPConn == usedTCPConn.TraceID).To(BeTrue())
+	t.Expect(httpReq.ProtoMajor).To(BeEquivalentTo(1))
+	t.Expect(httpReq.ProtoMinor).To(BeEquivalentTo(1))
+	t.Expect(httpReq.NetworkProxy).To(BeZero())
+	relTimeIsInBetween(t, httpReq.ReqSentAt, traceBeginAsRel, trace.TraceEndAt)
+	t.Expect(httpReq.ReqError).To(BeZero())
+	t.Expect(httpReq.ReqMethod).To(Equal("GET"))
+	t.Expect(httpReq.ReqURL).To(Equal("https://www.example.com"))
+	t.Expect(httpReq.ReqHeader).To(BeEmpty())
+	t.Expect(httpReq.ReqContentLen).To(BeZero())
+	relTimeIsInBetween(t, httpReq.RespRecvAt, httpReq.ReqSentAt, trace.TraceEndAt)
+	t.Expect(httpReq.RespStatusCode).To(Equal(200))
+	t.Expect(httpReq.RespHeader).ToNot(BeEmpty())
+	contentType := httpReq.RespHeader.Get("content-type")
+	t.Expect(contentType).ToNot(BeNil())
+	t.Expect(contentType.FieldVal).To(ContainSubstring("text/html"))
+	t.Expect(contentType.FieldValLen).To(BeEquivalentTo(len(contentType.FieldVal)))
+	t.Expect(httpReq.RespContentLen).ToNot(BeZero())
+
+	// Reused TCP connection trace
+	usedTCPConn = trace.TCPConns.Get(usedTCPConn.TraceID)
+	t.Expect(usedTCPConn).ToNot(BeNil())
+	t.Expect(usedTCPConn.FromDial == dial.TraceID).To(BeTrue())
+	t.Expect(usedTCPConn.Reused).To(BeTrue())
+	t.Expect(usedTCPConn.HandshakeBeginAt.IsRel).To(BeFalse())
+	t.Expect(usedTCPConn.HandshakeEndAt.IsRel).To(BeFalse())
+	t.Expect(usedTCPConn.HandshakeBeginAt.Abs.Before(usedTCPConn.HandshakeEndAt.Abs)).To(BeTrue())
+	t.Expect(usedTCPConn.HandshakeEndAt.Abs.Before(trace.TraceBeginAt.Abs)).To(BeTrue())
+	t.Expect(usedTCPConn.ConnCloseAt.Undefined()).To(BeTrue())
+	t.Expect(usedTCPConn.TotalRecvBytes).ToNot(BeZero())
+	t.Expect(usedTCPConn.TotalSentBytes).ToNot(BeZero())
 
 	err = client.Close()
 	t.Expect(err).ToNot(HaveOccurred())

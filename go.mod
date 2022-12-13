@@ -12,10 +12,12 @@ require (
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/golang-design/lockfree v0.0.1 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/lithammer/shortuuid/v4 v4.0.0 // indirect
 	github.com/onsi/gomega v1.24.1 // indirect
+	github.com/packetcap/go-pcap v0.0.0-20221020071412-2b2e94010282 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/sirupsen/logrus v1.9.0 // indirect
 	github.com/ti-mo/netfilter v0.3.1 // indirect

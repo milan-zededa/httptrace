@@ -4,10 +4,60 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcapgo"
+	"github.com/lithammer/shortuuid/v4"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// PacketCapture is a recording of all/some packets that arrived or left through
+// a given interface.
+// This is typically included alongside NetTrace and captured packets are filtered
+// to contain only those that correspond with the traced connections.
+type PacketCapture struct {
+	// InterfaceName : name of the interface on which the packets were captured
+	// (on either direction).
+	InterfaceName string
+	// SnapLen is the maximum number of bytes captured for each packet.
+	// Larger packets are (silently) returned truncated.
+	SnapLen uint32
+	// Packets : captured packets.
+	Packets []gopacket.Packet
+	// Truncated is returned as true if the capture does not contain all packets
+	// because the maximum allowed total size would be exceeded otherwise.
+	Truncated bool
+}
+
+// WriteTo writes packet capture to a file or a buffer or whatever w represents.
+func (pc PacketCapture) WriteTo(w io.Writer) error {
+	pw := pcapgo.NewWriter(w)
+	err := pw.WriteFileHeader(pc.SnapLen, layers.LinkTypeEthernet)
+	if err != nil {
+		return err
+	}
+	for _, packet := range pc.Packets {
+		err = pw.WritePacket(packet.Metadata().CaptureInfo, packet.Data())
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WriteToFile saves packet capture to a given file.
+func (pc PacketCapture) WriteToFile(filename string) error {
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return pc.WriteTo(f)
+}
 
 // NetTrace : recording of network operations performed by a client program
 // (e.g. HTTP client).
@@ -41,21 +91,24 @@ type HTTPTrace struct {
 // DialTrace : recording of an attempt to establish TCP connection with a remote endpoint.
 // The endpoint can be addressed using an IP address or a domain name.
 type DialTrace struct {
-	// TraceID : trace identifier for reference.
+	// TraceID : networkTrace identifier for reference.
 	TraceID TraceID `json:"traceID"`
 	// DialBeginAt : time when the dial attempt started.
 	DialBeginAt Timestamp `json:"dialBeginAt"`
 	// DialEndAt : time when the dial attempt ended - either successfully with an established
 	// connection or when it failed and gave up.
 	DialEndAt Timestamp `json:"dialEndAt"`
+	// DialErr : if dial failed, here is the reason.
+	DialErr string `json:"dialErr,omitempty"`
 	// CtxCloseAt : time when the context assigned to the dial attempt was closed/canceled
 	// by the caller.
 	CtxCloseAt Timestamp `json:"ctxCloseAt"`
-	// DstAddress : address of the remote endpoint - either IP address or a domain name.
+	// DstAddress : address of the remote endpoint in the format <host>:<port>
+	// where <host> is either IP address or a domain name.
 	DstAddress string `json:"dstAddress"`
-	// NetworkProxy : address of a network proxy in the format scheme://host:port
-	// Empty string if the connections attempt was not (explicitly) proxied.
-	NetworkProxy string `json:"networkProxy,omitempty"`
+	// ResolverDials : connection attempts made by the resolver towards nameservers with
+	// the aim of resolving <host> from DstAddress.
+	ResolverDials []ResolverDialTrace `json:"resolverDials,omitempty"`
 	// SourceIP : source IP address statically configured for the dial request.
 	// Empty if the source IP was not selected statically.
 	SourceIP string `json:"sourceIP,omitempty"`
@@ -66,7 +119,7 @@ type DialTrace struct {
 // DialTraces is a list of Dial traces.
 type DialTraces []DialTrace
 
-// Get pointer to the Dial trace with the given ID.
+// Get pointer to the Dial networkTrace with the given ID.
 func (traces DialTraces) Get(id TraceID) *DialTrace {
 	for i := range traces {
 		if traces[i].TraceID == id {
@@ -76,37 +129,57 @@ func (traces DialTraces) Get(id TraceID) *DialTrace {
 	return nil
 }
 
+// ResolverDialTrace : recording of a resolver's attempt to establish UDP or TCP connection
+// with a nameserver.
+type ResolverDialTrace struct {
+	// DialBeginAt : time when the dial attempt started.
+	DialBeginAt Timestamp `json:"dialBeginAt"`
+	// DialEndAt : time when the dial attempt ended - either successfully with an established
+	// connection or when it failed and gave up.
+	DialEndAt Timestamp `json:"dialEndAt"`
+	// DialErr : if dial failed, here is the reason.
+	DialErr string `json:"dialErr,omitempty"`
+	// Nameserver : destination nameserver address in the format <host>:<port>.
+	Nameserver string `json:"nameserver"`
+	// EstablishedConn : reference to an established UDP or TCP connection.
+	EstablishedConn TraceID `json:"establishedConn,omitempty"`
+}
+
 // TCPConnTrace : recording of an established or even just attempted but not completed
 // TCP connection.
 type TCPConnTrace struct {
-	// TraceID : trace identifier for reference.
+	// TraceID : networkTrace identifier for reference.
 	TraceID TraceID `json:"traceID"`
 	// FromDial : Reference to Dial where this originated from.
 	FromDial TraceID `json:"fromDial"`
+	// FromResolver : true if this connection was opened from the resolver
+	// and towards a nameserver.
+	FromResolver bool `json:"fromResolver,omitempty"`
 	// HandshakeBeginAt : time when the TCP handshake process started (SYN packet was sent).
 	HandshakeBeginAt Timestamp `json:"handshakeBeginAt"`
 	// HandshakeEndAt : time when the handshake process ended - either successfully with
 	// an established TCP connection or with a failure (canceled, timeouted, refused, ...).
 	HandshakeEndAt Timestamp `json:"handshakeEndAt"`
-	// HandshakeErr : if handshake failed to establish, here is the reason.
-	HandshakeErr string `json:"handshakeErr,omitempty"`
+	// Connected is true if the handshake succeeded to establish connection.
+	// If this is false, reason of the failure can be available as part of DialTrace (.DialErr).
+	Connected bool `json:"connected"`
 	// ConnCloseAt : time when the connection was closed (from our side).
 	ConnCloseAt Timestamp `json:"connCloseAt"`
 	// AddrTuple : 4-tuple with source + destination addresses identifying the TCP connection.
 	AddrTuple AddrTuple `json:"addrTuple"`
-	// Reused : was this TCP connection reused between separately recorded NetTrace record?
+	// Reused : was this TCP connection reused between separately recorded NetTrace records?
 	// For example, if two HTTP requests are separately traced (producing two NetTrace instances),
 	// the first one will have recording of a new TCP connection, while the second one will
 	// repeat the same TCPConnTrace, with some updates for the second request and Reused=true.
 	// Note that if TCP connection is reused between traces, the Dial from each it has originated
-	// (FromDial) will als reappear in the next trace.
+	// (FromDial) will als reappear in the next networkTrace.
 	Reused bool `json:"reused"`
 	// TotalSentBytes : total number of bytes sent as a TCP payload through this connection.
 	// (i.e. TCP header and lower-layer headers are not included)
-	TotalSentBytes uint16 `json:"totalSentBytes"`
+	TotalSentBytes uint64 `json:"totalSentBytes"`
 	// TotalRecvBytes : total number of bytes received as a TCP payload through this connection.
 	// (i.e. TCP header and lower-layer headers are not included)
-	TotalRecvBytes uint16 `json:"totalRecvBytes"`
+	TotalRecvBytes uint64 `json:"totalRecvBytes"`
 	// Conntract : conntrack entry (provided by Netfilter connection tracking system) corresponding
 	// to this connection.
 	// Nil if not available or if conntrack tracing was disabled.
@@ -122,7 +195,7 @@ type TCPConnTrace struct {
 // TCPConnTraces is a list of TCP connection traces.
 type TCPConnTraces []TCPConnTrace
 
-// Get pointer to the TCP connection trace with the given ID.
+// Get pointer to the TCP connection networkTrace with the given ID.
 func (traces TCPConnTraces) Get(id TraceID) *TCPConnTrace {
 	for i := range traces {
 		if traces[i].TraceID == id {
@@ -135,24 +208,25 @@ func (traces TCPConnTraces) Get(id TraceID) *TCPConnTrace {
 // UDPConnTrace : recording of a UDP connection (unreliable exchange of UDP datagrams between
 // our UDP client and a remote UDP peer).
 type UDPConnTrace struct {
-	// TraceID : trace identifier for reference.
+	// TraceID : networkTrace identifier for reference.
 	TraceID TraceID `json:"traceID"`
 	// FromDial : Reference to Dial where this originated from.
 	FromDial TraceID `json:"fromDial"`
+	// FromResolver : true if this connection was opened from the resolver
+	// and towards a nameserver.
+	FromResolver bool `json:"fromResolver,omitempty"`
 	// SocketCreateAt : time when the UDP socket was created.
 	SocketCreateAt Timestamp `json:"socketCreateAt"`
-	// SocketCreateErr : if socket failed to create, here is the reason.
-	SocketCreateErr string `json:"socketCreateErr,omitempty"`
 	// ConnCloseAt : time when the connection was closed (from our side).
 	ConnCloseAt Timestamp `json:"connCloseAt"`
 	// AddrTuple : 4-tuple with source + destination addresses identifying the UDP connection.
 	AddrTuple AddrTuple `json:"addrTuple"`
 	// TotalSentBytes : total number of bytes sent as a UDP payload through this connection.
 	// (i.e. UDP header and lower-layer headers are not included)
-	TotalSentBytes uint16 `json:"totalSentBytes"`
+	TotalSentBytes uint64 `json:"totalSentBytes"`
 	// TotalRecvBytes : total number of bytes received as a UDP payload through this connection.
 	// (i.e. UDP header and lower-layer headers are not included)
-	TotalRecvBytes uint16 `json:"totalRecvBytes"`
+	TotalRecvBytes uint64 `json:"totalRecvBytes"`
 	// Conntract : conntrack entry (provided by Netfilter connection tracking system) corresponding
 	// to this connection.
 	// Nil if not available or if conntrack tracing was disabled.
@@ -168,7 +242,7 @@ type UDPConnTrace struct {
 // UDPConnTraces is a list of UDP connection traces.
 type UDPConnTraces []UDPConnTrace
 
-// Get pointer to the UDP connection trace with the given ID.
+// Get pointer to the UDP connection networkTrace with the given ID.
 func (traces UDPConnTraces) Get(id TraceID) *UDPConnTrace {
 	for i := range traces {
 		if traces[i].TraceID == id {
@@ -180,15 +254,13 @@ func (traces UDPConnTraces) Get(id TraceID) *UDPConnTrace {
 
 // DNSQueryTrace : recording of a DNS query.
 type DNSQueryTrace struct {
-	// TraceID : trace identifier for reference.
+	// TraceID : networkTrace identifier for reference.
 	TraceID TraceID `json:"traceID"`
 	// FromDial : Reference to Dial where this originated from.
 	FromDial TraceID `json:"fromDial"`
-	// Connection : Reference to the trace record of the underlying UDP or TCP connection,
+	// Connection : Reference to the networkTrace record of the underlying UDP or TCP connection,
 	// which was used to carry DNS request(s)/response(s).
 	Connection TraceID `json:"connection"`
-	// DNSQueryErr : If DNS query failed, here is the reason.
-	DNSQueryErr string `json:"dnsQueryErr,omitempty"`
 	// DNSQueryMsgs : all DNS query messages sent within this connection.
 	DNSQueryMsgs []DNSQueryMsg `json:"dnsQueryMsgs"`
 	// DNSReplyMsgs : all DNS reply messages received within this connection.
@@ -198,7 +270,7 @@ type DNSQueryTrace struct {
 // DNSQueryTraces is a list of DNS query traces.
 type DNSQueryTraces []DNSQueryTrace
 
-// Get pointer to the DNS query trace with the given ID.
+// Get pointer to the DNS query networkTrace with the given ID.
 func (traces DNSQueryTraces) Get(id TraceID) *DNSQueryTrace {
 	for i := range traces {
 		if traces[i].TraceID == id {
@@ -218,8 +290,13 @@ type DNSQueryMsg struct {
 	RecursionDesired bool `json:"recursionDesired"`
 	// Truncated : indicates that this message was truncated due to excessive length.
 	Truncated bool `json:"truncated"`
+	// Size of the message in bytes.
+	Size uint32 `json:"size"`
 	// Questions : DNS questions.
 	Questions []DNSQuestion `json:"questions"`
+	// OptUDPPayloadSize : the maximum UDP payload size that the requestor accepts.
+	// It is specified inside the query message using EDNS (RFC 6891).
+	OptUDPPayloadSize uint16 `json:"optUDPPayloadSize,omitempty"`
 }
 
 // DNSQuestion : single question from DNS query message.
@@ -244,6 +321,8 @@ type DNSReplyMsg struct {
 	RecursionAvailable bool `json:"recursionAvailable"`
 	// Truncated : indicates that this message was truncated due to excessive length.
 	Truncated bool `json:"truncated"`
+	// Size of the message in bytes.
+	Size uint32 `json:"size"`
 	// RCode : Response code.
 	RCode DNSRCode `json:"rCode"`
 	// Answers : DNS answers.
@@ -270,7 +349,7 @@ type DNSAnswer struct {
 // TLSTunnelTrace : recording of a TLS tunnel establishment
 // (successful or a failed attempt).
 type TLSTunnelTrace struct {
-	// TraceID : trace identifier for reference.
+	// TraceID : networkTrace identifier for reference.
 	TraceID TraceID `json:"traceID"`
 	// TCPConn : reference to TCP connection over which the tunnel was established
 	// (or attempted to be established).
@@ -298,7 +377,7 @@ type TLSTunnelTrace struct {
 	// NegotiatedProtocol is the application protocol negotiated with ALPN.
 	// (e.g. HTTP/1.1, h2)
 	NegotiatedProto string `json:"negotiatedProto"`
-	// ServerName is the value of the Server Name Indication (SNI) extension sent by
+	// ServerName is the value of the Server name Indication (SNI) extension sent by
 	// the client. It's available both on the server and on the client side.
 	ServerName string `json:"serverName"`
 }
@@ -306,7 +385,7 @@ type TLSTunnelTrace struct {
 // TLSTunnelTraces is a list of TLS tunnel traces.
 type TLSTunnelTraces []TLSTunnelTrace
 
-// Get pointer to the TLS tunnel trace with the given ID.
+// Get pointer to the TLS tunnel networkTrace with the given ID.
 func (traces TLSTunnelTraces) Get(id TraceID) *TLSTunnelTrace {
 	for i := range traces {
 		if traces[i].TraceID == id {
@@ -318,7 +397,7 @@ func (traces TLSTunnelTraces) Get(id TraceID) *TLSTunnelTrace {
 
 // HTTPReqTrace : recording of an HTTP request.
 type HTTPReqTrace struct {
-	// TraceID : trace identifier for reference.
+	// TraceID : networkTrace identifier for reference.
 	TraceID TraceID `json:"traceID"`
 	// TCPConn : reference to the underlying TCP connection used by the HTTP request.
 	TCPConn TraceID `json:"tcpConn"`
@@ -328,6 +407,9 @@ type HTTPReqTrace struct {
 	// ProtoMinor : minor number of the HTTP protocol version used for
 	// request & response.
 	ProtoMinor uint8 `json:"protoMinor"`
+	// NetworkProxy : address of a network proxy in the format scheme://host:port
+	// Empty string if the HTTP request was not (explicitly) proxied.
+	NetworkProxy string `json:"networkProxy,omitempty"`
 
 	// Request:
 
@@ -338,10 +420,10 @@ type HTTPReqTrace struct {
 	ReqMethod string `json:"reqMethod"`
 	// ReqURL specifies the resource addressed by the request.
 	ReqURL string `json:"reqURL"`
-	// ReqHeaders : request header fields.
-	// If tracing of HTTP headers is disabled (which it is by default), then this is
+	// ReqHeader : request header.
+	// If tracing of HTTP header fields is disabled (which it is by default), then this is
 	// an empty slice.
-	ReqHeaders HTTPHeaders `json:"reqHeaders,omitempty"`
+	ReqHeader HTTPHeader `json:"reqHeader,omitempty"`
 	// ReqContentLen : size of the HTTP request body content.
 	// This may be available even if Content-Length header field is not.
 	// But note that this only counts the part of the content that was actually loaded
@@ -358,10 +440,10 @@ type HTTPReqTrace struct {
 	RespRecvAt Timestamp `json:"respRecvAt"`
 	// RespRecvAt : response status code.
 	RespStatusCode int `json:"respStatusCode"`
-	// RespHeaders : response header fields.
-	// If tracing of HTTP headers is disabled (which it is by default), then this is
+	// RespHeader : response header.
+	// If tracing of HTTP header fields is disabled (which it is by default), then this is
 	// an empty slice.
-	RespHeaders HTTPHeaders `json:"respHeaders,omitempty"`
+	RespHeader HTTPHeader `json:"respHeader,omitempty"`
 	// RespContentLen : number of bytes of the HTTP response body received and read
 	// by the caller. This may be available even if Content-Length header field is not.
 	// But note that if the caller didn't read all bytes until EOF and didn't close
@@ -373,7 +455,7 @@ type HTTPReqTrace struct {
 // HTTPReqTraces is a list of HTTP request traces.
 type HTTPReqTraces []HTTPReqTrace
 
-// Get pointer to the HTTP request trace with the given ID.
+// Get pointer to the HTTP request networkTrace with the given ID.
 func (traces HTTPReqTraces) Get(id TraceID) *HTTPReqTrace {
 	for i := range traces {
 		if traces[i].TraceID == id {
@@ -383,8 +465,8 @@ func (traces HTTPReqTraces) Get(id TraceID) *HTTPReqTrace {
 	return nil
 }
 
-// HTTPHeader : a single HTTP message header field.
-type HTTPHeader struct {
+// HTTPHeaderKV : a single HTTP message header field (a key-value pair).
+type HTTPHeaderKV struct {
 	// FieldName : Field name.
 	FieldName string `json:"fieldName"`
 	// FieldVal : Field value.
@@ -394,19 +476,19 @@ type HTTPHeader struct {
 	// FieldValLen : Length of the (actual, possibly hidden) field value (in characters).
 	// Just like field value, this can be also hidden (returned as zero) using tracing
 	// options (e.g. if knowing value length is enough to raise security concern).
-	FieldValLen uint32 `json:"fieldValLen"`
+	FieldValLen uint32 `json:"fieldValLen,omitempty"`
 }
 
-// HTTPHeaders is a list of HTTP headers.
-type HTTPHeaders []HTTPHeader
+// HTTPHeader represents the key-value pairs in an HTTP header.
+type HTTPHeader []HTTPHeaderKV
 
 // Get pointer to the HTTP header field with the given name.
-func (headers HTTPHeaders) Get(name string) *HTTPHeader {
+func (header HTTPHeader) Get(name string) *HTTPHeaderKV {
 	// According to RFC2616, field names are case-insensitive.
 	name = strings.ToLower(name)
-	for i := range headers {
-		if strings.ToLower(headers[i].FieldName) == name {
-			return &headers[i]
+	for i := range header {
+		if strings.ToLower(header[i].FieldName) == name {
+			return &header[i]
 		}
 	}
 	return nil
@@ -493,9 +575,19 @@ type SocketOp struct {
 	DataLen uint32 `json:"dataLen"`
 }
 
-// TraceID : identifier for a trace record (of any type - can be DialTrace, TCPConnTrace, etc.).
-// Empty string is not a valid ID and can be used as undefined reference.
+// TraceID : identifier for a networkTrace record (of any type - can be DialTrace, TCPConnTrace, etc.).
 type TraceID string
+
+// Undefined returns true if the ID is not defined (empty).
+func (t TraceID) Undefined() bool {
+	return t == ""
+}
+
+// IDGenerator uses shortuuid (by default) to generate network networkTrace IDs.
+// It is exported and changed.
+var IDGenerator = func() TraceID {
+	return TraceID(shortuuid.New())
+}
 
 // Timestamp : absolute or relative timestamp for a traced event.
 // Zero value (IsRel is False && Abs.IsZero() is true) represents undefined
@@ -515,6 +607,45 @@ type Timestamp struct {
 // Undefined returns true when timestamp is not defined.
 func (t Timestamp) Undefined() bool {
 	return t.IsRel == false && t.Abs.IsZero()
+}
+
+// Add relative timestamp to absolute timestamp and get absolute timestamp.
+func (t Timestamp) Add(relT Timestamp) Timestamp {
+	if t.IsRel {
+		panic("t is not absolute")
+	}
+	if !relT.IsRel {
+		panic("relT is not relative")
+	}
+	return Timestamp{
+		Abs: t.Abs.Add(time.Duration(relT.Rel) * time.Millisecond),
+	}
+}
+
+// Sub returns the duration t-t2.
+// It is required that timestamps are of the same type - either both relative
+// or both absolute.
+func (t Timestamp) Sub(t2 Timestamp) time.Duration {
+	if t.IsRel != t2.IsRel {
+		panic("t and t2 are timestamps of different type")
+	}
+	if t.IsRel {
+		return time.Duration(t.Rel-t2.Rel) * time.Millisecond
+	}
+	return t.Abs.Sub(t2.Abs)
+}
+
+// Elapsed returns how much time elapsed since t.
+// t must be absolute timestamp.
+// Returned timestamp is relative.
+func (t Timestamp) Elapsed() Timestamp {
+	if t.IsRel {
+		panic("t is not absolute")
+	}
+	return Timestamp{
+		IsRel: true,
+		Rel:   uint32(time.Since(t.Abs) / time.Millisecond),
+	}
 }
 
 // MarshalJSON marshals Timestamp as a quoted json string.

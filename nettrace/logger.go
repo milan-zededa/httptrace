@@ -8,6 +8,12 @@ type sirupsenLogger struct {
 	logger *logrus.Logger
 }
 
+func newSirupsenLogger() *sirupsenLogger {
+	return &sirupsenLogger{
+		logger: logrus.New(),
+	}
+}
+
 func (sl *sirupsenLogger) Tracef(format string, args ...interface{}) {
 	sl.logger.Tracef(format, args...)
 }
@@ -31,3 +37,17 @@ func (sl *sirupsenLogger) Fatalf(format string, args ...interface{}) {
 func (sl *sirupsenLogger) Panicf(format string, args ...interface{}) {
 	sl.logger.Panicf(format, args...)
 }
+
+type noopLogger struct{}
+
+func (sl *noopLogger) Tracef(format string, args ...interface{}) {}
+
+func (sl *noopLogger) Noticef(format string, args ...interface{}) {}
+
+func (sl *noopLogger) Warningf(format string, args ...interface{}) {}
+
+func (sl *noopLogger) Errorf(format string, args ...interface{}) {}
+
+func (sl *noopLogger) Fatalf(format string, args ...interface{}) {}
+
+func (sl *noopLogger) Panicf(format string, args ...interface{}) {}
