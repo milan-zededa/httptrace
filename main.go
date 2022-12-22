@@ -37,37 +37,23 @@ sudo ip netns exec httptrace ./httptrace
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
 	"os"
-	"os/user"
-	"path"
-	"strings"
 	"time"
 
+	"example.com/httptrace/netdump"
 	"example.com/httptrace/nettrace"
 )
-
-/*
-- EVE will produce /persist/nettrace/<microservice>-<timestamp>.tar.gz that will contain:
-	nettrace.json
-	pcap/<ifname>.pcap...
-	eve/version.txt nim-current/intended-state.dot (the same for zedrouter after refactor) controller.txt (host:port) dns.json dpcl.json aa.json
-	wwan/status.json metrics.json config.json
-	linux/ifconfig.txt iplink.txt arp.txt iprule.txt iproute-<table>.txt... dhcpcd-lease-<ifname>.txt...
-*/
 
 const (
 	destURL   = "https://www.google.com/"
@@ -79,86 +65,11 @@ const (
 	reqCount  = 1
 	pcapFile  = "/tmp/httptrace.pcap"
 	runPcap   = true
-	tarFile   = "/tmp/nettrace.tgz"
 )
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
-}
-
-type fileForTar struct {
-	dstPath string
-	info    fs.FileInfo
-	isDir   bool
-	content io.Reader
-}
-
-func createTarGz(tarPath string, files []fileForTar) (err error) {
-	tarFile, err1 := os.Create(tarPath)
-	if err1 != nil {
-		return err1
-	}
-	defer tarFile.Close()
-	gz := gzip.NewWriter(tarFile)
-	defer gz.Close()
-	tw := tar.NewWriter(gz)
-	defer tw.Close()
-
-	for _, file := range files {
-		var hdr *tar.Header
-		content := file.content
-		if file.info != nil {
-			hdr, err = tar.FileInfoHeader(file.info, file.info.Name())
-			if err != nil {
-				return err
-			}
-		} else {
-			now := time.Now()
-			hdr = &tar.Header{
-				Uid:        os.Getuid(),
-				Gid:        os.Getgid(),
-				ModTime:    now,
-				AccessTime: now,
-				ChangeTime: now,
-			}
-			if file.isDir {
-				hdr.Typeflag = tar.TypeDir
-				hdr.Mode = 0755 | int64(os.ModeDir)
-			} else {
-				hdr.Typeflag = tar.TypeReg
-				hdr.Mode = 0664
-				if file.content != nil {
-					buf := new(strings.Builder)
-					hdr.Size, err = io.Copy(buf, file.content)
-					if err != nil {
-						return err
-					}
-					content = strings.NewReader(buf.String())
-				}
-			}
-			if whoami, err := user.Current(); err == nil {
-				hdr.Uname = whoami.Username
-				if group, err := user.LookupGroupId(whoami.Gid); err == nil {
-					hdr.Gname = group.Name
-				}
-			}
-		}
-		hdr.Name = file.dstPath
-		err = tw.WriteHeader(hdr)
-		if err != nil {
-			return err
-		}
-		if file.isDir {
-			continue
-		}
-		if content != nil {
-			_, err = io.Copy(tw, content)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	//nettrace.IDGenerator = nettrace.ShortUUID
 }
 
 func main() {
@@ -199,6 +110,7 @@ func main() {
 			IncludeICMP:       true,
 			IncludeARP:        true,
 			TCPWithoutPayload: false,
+			//TotalSizeLimit:    8000,
 		})
 	}
 	client, err := nettrace.NewHTTPClient(cfg, opts...)
@@ -257,29 +169,6 @@ func main() {
 	}
 	fmt.Printf("HTTP Trace: %s\n", string(traceInJson))
 
-	files := []fileForTar{
-		{
-			dstPath: "pcap",
-			isDir:   true,
-		},
-		{
-			dstPath: "eve",
-			isDir:   true,
-		},
-		{
-			dstPath: "wwan",
-			isDir:   true,
-		},
-		{
-			dstPath: "linux",
-			isDir:   true,
-		},
-		{
-			dstPath: "nettrace.json",
-			content: strings.NewReader(string(traceInJson)),
-		},
-	}
-
 	if runPcap {
 		for _, pcap := range pcaps {
 			err = pcap.WriteToFile(pcapFile)
@@ -290,29 +179,15 @@ func main() {
 			fmt.Printf("Captured %d packets from interface %s (truncated: %t), "+
 				"pcap written to %s\n", len(pcap.Packets), pcap.InterfaceName,
 				pcap.Truncated, pcapFile)
-
-			filename := pcap.InterfaceName
-			if pcap.Truncated {
-				filename += "-truncated"
-			}
-			filename += ".pcap"
-			buf := new(strings.Builder)
-			err = pcap.WriteTo(buf)
-			if err != nil {
-				fmt.Println(err)
-				os.Exit(1)
-			}
-			files = append(files, fileForTar{
-				dstPath: path.Join("pcap", filename),
-				content: strings.NewReader(buf.String()),
-			})
 		}
 	}
 
-	err = createTarGz(tarFile, files)
+	netDumper := &netdump.NetDumper{MaxDumpsPerTopic: 5}
+	filename, err := netDumper.PublishHTTPTrace("test", httpTrace, pcaps)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	fmt.Printf("Network reported archived to %s\n", tarFile)
+	fmt.Printf("Published netdump to %s\n", filename)
+
 }

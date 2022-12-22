@@ -148,9 +148,18 @@ func newPacketCapturer(forTracer tracerWithPcap, log Logger,
 }
 
 // Returns map ifname->pcap.
-func (pc *packetCapturer) getPcap() map[string]*filteredPackets {
+func (pc *packetCapturer) getPcap() (pcaps []PacketCapture) {
 	pc.filterPcap()
-	return pc.filteredPcap
+	for ifName, pcap := range pc.filteredPcap {
+		pcaps = append(pcaps, PacketCapture{
+			InterfaceName:  ifName,
+			SnapLen:        pcap.snapLen,
+			Packets:        pcap.packets,
+			Truncated:      pcap.truncated,
+			WithTCPPayload: !pc.opts.TCPWithoutPayload,
+		})
+	}
+	return pcaps
 }
 
 // Clear removes all captured packets (but the process of capturing packets is not stopped).

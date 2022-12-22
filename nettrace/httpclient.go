@@ -379,14 +379,7 @@ func (c *HTTPClient) GetTrace(description string) (HTTPTrace, []PacketCapture, e
 	// Collect captured packets.
 	var pcaps []PacketCapture
 	if c.packetCapturer != nil {
-		for ifName, pcap := range c.packetCapturer.getPcap() {
-			pcaps = append(pcaps, PacketCapture{
-				InterfaceName: ifName,
-				SnapLen:       pcap.snapLen,
-				Packets:       pcap.packets,
-				Truncated:     pcap.truncated,
-			})
-		}
+		pcaps = c.packetCapturer.getPcap()
 	}
 	// Combine all network traces into one HTTPTrace.
 	httpTrace := HTTPTrace{NetTrace: NetTrace{

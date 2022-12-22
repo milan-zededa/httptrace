@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,6 +32,9 @@ type PacketCapture struct {
 	// Truncated is returned as true if the capture does not contain all packets
 	// because the maximum allowed total size would be exceeded otherwise.
 	Truncated bool
+	// WithTCPPayload : true if packet capture was configured to include also
+	// TCP packets with non empty payload.
+	WithTCPPayload bool
 }
 
 // WriteTo writes packet capture to a file or a buffer or whatever w represents.
@@ -583,9 +587,32 @@ func (t TraceID) Undefined() bool {
 	return t == ""
 }
 
-// IDGenerator uses shortuuid (by default) to generate network networkTrace IDs.
-// It is exported and changed.
-var IDGenerator = func() TraceID {
+// TIDGenerator is a function that generates unique IDs for network traces.
+type TIDGenerator func() TraceID
+
+// IDGenerator by default uses AtomicCounterID to generate network trace IDs.
+// It is exported and can be changed.
+var IDGenerator TIDGenerator = AtomicCounterID
+
+var idCounter uint64
+
+// AtomicCounterID atomically increments integer and returns it as the trace ID
+// in the hexadecimal format and prefixed with "tid-".
+// Generated IDs are very concise but guarantee uniqueness only within a single
+// execution of one process (which is the minimum requirement for TraceID).
+func AtomicCounterID() TraceID {
+	id := atomic.AddUint64(&idCounter, 1)
+	return TraceID("tid-" + strconv.FormatUint(id, 16))
+}
+
+// ShortUUID can be used as IDGenerator to produce a shorter variant of universally
+// unique identifiers for network traces.
+// To use this instead of the default AtomicCounterID, add to your code:
+//
+// func init() {
+//     nettrace.IDGenerator = nettrace.ShortUUID
+// }
+func ShortUUID() TraceID {
 	return TraceID(shortuuid.New())
 }
 
