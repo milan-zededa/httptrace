@@ -41,6 +41,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -56,7 +57,7 @@ import (
 )
 
 const (
-	destURL   = "https://www.google.com/"
+	destURL   = "https://www.dekona.com/"
 	localIP   = /*"192.168.88.2"*/ "192.168.99.1"
 	httpVer   = 2  // 1 or 2
 	proxy     = "" //https://10.10.10.101:9091"
@@ -140,6 +141,13 @@ func main() {
 
 		fmt.Printf("Starting HTTP request: %v\n", req)
 		resp, err := client.Do(req)
+		for err != nil {
+			fmt.Printf("HTTP request error (%T): %v\n", err, err)
+			if urlErr, ok := err.(*url.Error); ok {
+				fmt.Printf("URL error: %v\n", urlErr)
+			}
+			err = errors.Unwrap(err)
+		}
 		fmt.Printf("HTTP request done: %v; %v\n", resp, err)
 
 		if resp != nil && resp.Body != nil {
@@ -189,5 +197,4 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Published netdump to %s\n", filename)
-
 }

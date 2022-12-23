@@ -10,7 +10,7 @@ import (
 	"github.com/golang-design/lockfree"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	pcap "github.com/packetcap/go-pcap"
+	"github.com/packetcap/go-pcap"
 	"github.com/ti-mo/conntrack"
 )
 
