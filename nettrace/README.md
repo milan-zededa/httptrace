@@ -56,11 +56,11 @@ Applying nettrace to Golang's HTTP client, the following set of network traces w
   - record of every Dial (see [Transport.DialContext()][http-transport]), with information about 
     the destination address, static source address if configured, list of nested Dials performed
     by the resolver, etc.
-  - record of every UDP "connection" (used for name resolution), including the src/dst IP/port/proto
-    5-tuple, conntrack entry (optional), number of payload bytes sent/received, trace of every
+  - record of every UDP "connection" (used for name resolution), including the src/dst IP/port
+    4-tuple, conntrack entry (optional), number of payload bytes sent/received, trace of every
     socket read/write operation (optional).
   - record of every TCP connection (established or failed to establish), including the src/dst
-    IP/port/proto 5-tuple, conntrack entry (optional), number of payload bytes sent/received,
+    IP/port 4-tuple, conntrack entry (optional), number of payload bytes sent/received,
     trace for every socket read/write operation (optional), flag informing if the connection
     was reused, etc.
   - record of every DNS query<->reply conversation between the resolver and a DNS server (optional)
@@ -132,6 +132,12 @@ Please DO NOT change the `Client.Transport` field of the embedded client (to fur
 customize the HTTP client behaviour), otherwise tracing functionality may get broken.
 Instead, configure the desired behaviour of the HTTP client inside the `nettrace.HTTPClientCfg`
 argument of the `nettrace.NewHTTPClient()` constructor.
+The only allowed action is to additionally wrap the Transport with a [RoundTripper][round-tripper]
+implementation, which is allowed to for example modify HTTP requests/responses,
+but still should call the wrapped Transport for the HTTP request execution.
+An example of this is [Transport from the oauth2 package][oauth2-transp], adding
+an Authorization header with a token.
+
 
 With the client constructed, run one or more HTTP requests (using the embedded `http.Client`)
 and later use `GetTrace()` to obtain collected network traces:
@@ -144,6 +150,12 @@ if err != nil {
     os.Exit(1)
 }
 resp, err := client.Do(req)
+if err == nil && resp != nil && resp.Body != nil {
+    if _, err := io.Copy(os.Stdout, resp.Body); err != nil {
+        fmt.Println(err)
+        os.Exit(1)
+    }
+}
 
 // ...
 
@@ -159,6 +171,9 @@ if err != nil {
 }
 fmt.Printf("Network traces collected from the HTTP client: %s\n", string(traceInJson))
 ```
+Note that communication with the HTTP server continues until the request fails
+or the returned body is fully read or closed. In other words, prefer getting network
+traces AFTER reading response body.
 
 The returned packet captures (`pcaps` in the example; one for each configured interface)
 can be each saved to a file using `PacketCapture.WriteToFile(filename)` and analyzed
@@ -620,3 +635,5 @@ structure and can be marshalled into JSON, an example of which is shown below:
 [http-transport]: https://pkg.go.dev/net/http#Transport
 [context]: https://pkg.go.dev/context
 [wireshark]: https://www.wireshark.org/
+[round-tripper]: https://pkg.go.dev/net/http#RoundTripper
+[oauth2-transp]: https://pkg.go.dev/golang.org/x/oauth2#Transport

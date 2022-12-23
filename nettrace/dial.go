@@ -99,6 +99,7 @@ func newTracedDialer(tracer tracerWithDial, log Logger, sourceIP net.IP,
 }
 
 func (td *tracedDialer) dial(ctx context.Context, network, address string) (net.Conn, error) {
+	// Prepare the original Dialer from the net package.
 	var sourceAddr net.Addr
 	if td.sourceIP != nil {
 		if strings.HasPrefix(network, "tcp") {
@@ -110,6 +111,8 @@ func (td *tracedDialer) dial(ctx context.Context, network, address string) (net.
 	resolver := &tracedResolver{caller: td}
 	netDialer := net.Dialer{Resolver: resolver.netResolver(), Control: td.tfd.controlFD,
 		LocalAddr: sourceAddr, Timeout: td.handshakeTimeout}
+
+	// Monitor context for closure.
 	go func() {
 		<-ctx.Done()
 		td.tracer.publishTrace(dialTrace{
@@ -120,6 +123,8 @@ func (td *tracedDialer) dial(ctx context.Context, network, address string) (net.
 			ctxClosed: true,
 		})
 	}()
+
+	// Run DialContext method of the original Dialer.
 	dial := dialTrace{
 		DialTrace: DialTrace{
 			TraceID:     td.dialID,
@@ -142,6 +147,7 @@ func (td *tracedDialer) dial(ctx context.Context, network, address string) (net.
 	dial.conn = conn
 	dial.EstablishedConn = IDGenerator()
 	td.tracer.publishTrace(dial)
+
 	// Trace established connection.
 	tracedConn := newTracedConn(
 		td.tracer, dial.EstablishedConn, conn, td.log, false, td.withDNSTrace)
@@ -160,6 +166,7 @@ func (tr *tracedResolver) netResolver() *net.Resolver {
 }
 
 func (tr *tracedResolver) dial(ctx context.Context, network, address string) (net.Conn, error) {
+	// Check if this nameserver is allowed by the user config.
 	if tr.caller.skipNameserver != nil {
 		ip, port, err := parseHostAddr(address)
 		if err != nil {
@@ -168,10 +175,14 @@ func (tr *tracedResolver) dial(ctx context.Context, network, address string) (ne
 		}
 		skip, reason := tr.caller.skipNameserver(ip, port)
 		if skip {
-			tr.skippedServers = append(tr.skippedServers, address)
+			if !stringListContains(tr.skippedServers, address) {
+				tr.skippedServers = append(tr.skippedServers, address)
+			}
 			return nil, fmt.Errorf("skipping nameserver %s: %s", address, reason)
 		}
 	}
+
+	// Prepare the original Dialer from the net package.
 	var sourceAddr net.Addr
 	if tr.caller.sourceIP != nil {
 		if strings.HasPrefix(network, "tcp") {
@@ -187,6 +198,8 @@ func (tr *tracedResolver) dial(ctx context.Context, network, address string) (ne
 		resolvDialID: resolvDialID,
 	}
 	netDialer := net.Dialer{Control: tfd.controlFD, LocalAddr: sourceAddr}
+
+	// Run DialContext method of the original Dialer.
 	trace := resolverDialTrace{
 		resolvDial:  resolvDialID,
 		parentDial:  tr.caller.dialID,
@@ -195,7 +208,9 @@ func (tr *tracedResolver) dial(ctx context.Context, network, address string) (ne
 	}
 	conn, err := netDialer.DialContext(ctx, network, address)
 	trace.dialEndAt = tr.caller.tracer.getRelTimestamp()
-	tr.triedServers = append(tr.triedServers, address)
+	if !stringListContains(tr.triedServers, address) {
+		tr.triedServers = append(tr.triedServers, address)
+	}
 	if err != nil {
 		trace.dialErr = err
 		tr.caller.tracer.publishTrace(trace)
@@ -204,6 +219,7 @@ func (tr *tracedResolver) dial(ctx context.Context, network, address string) (ne
 	trace.conn = conn
 	trace.connID = IDGenerator()
 	tr.caller.tracer.publishTrace(trace)
+
 	// Trace established connection.
 	tracedConn := newTracedConn(
 		tr.caller.tracer, trace.connID, conn, tr.caller.log, true, tr.caller.withDNSTrace)
@@ -294,4 +310,13 @@ func parseHostAddr(address string) (ip net.IP, port uint16, err error) {
 		return nil, 0, fmt.Errorf("failed to parse port %s: %w", portStr, err)
 	}
 	return ip, uint16(portInt), nil
+}
+
+func stringListContains(list []string, item string) bool {
+	for _, listItem := range list {
+		if listItem == item {
+			return true
+		}
+	}
+	return false
 }

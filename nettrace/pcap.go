@@ -31,7 +31,8 @@ type connIterCallback func(connAddr addrTuple, conntrack *conntrack.Flow) (stop 
 // with packetCapturer.
 type tracerWithPcap interface {
 	networkTracer
-	// Iterate over every traced socket (incl. those not connected).
+	// Iterate over every traced not-yet-connected AF-INET socket.
+	// conntrack can be nil (if not traced).
 	iterNoConnSockets(connIterCallback)
 	// Iterate over every traced connection.
 	// conntrack can be nil (if not traced).

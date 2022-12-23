@@ -110,6 +110,7 @@ func newTracedRoundTripper(
 // RoundTrip executes a single *traced* HTTP transaction.
 func (rt *tracedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	reqID := IDGenerator()
+
 	// tracedHTTPReq used to trace TLS tunnels + find net.Conn for the HTTP request.
 	rtTracer := &tracedHTTPReq{
 		tracer:    rt.tracer,
@@ -123,6 +124,7 @@ func (rt *tracedRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	})
 	ctx = withHTTPReqID(ctx, reqID)
 	req = req.WithContext(ctx)
+
 	// tracedHTTPBody used to find out the request body length.
 	if req.Body != nil {
 		tracedBody := newTracedHTTPBody(reqID, rt.tracer, true, req.Body)
@@ -132,6 +134,7 @@ func (rt *tracedRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 			req.Body = tracedBody
 		}
 	}
+
 	// Publish networkTrace about the HTTP request.
 	var netProxy string
 	url, err := rt.tracer.proxyForRequest(req)
@@ -149,7 +152,10 @@ func (rt *tracedRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		netProxy:   netProxy,
 	}
 	rt.tracer.publishTrace(reqTrace)
+
+	// Execute the HTTP request.
 	resp, err := rt.tracer.getHTTPTransport().RoundTrip(req)
+
 	// Publish networkTrace about the HTTP response.
 	if err == nil && resp != nil {
 		respTrace := httpRespTrace{
@@ -248,13 +254,7 @@ func (t *tracedHTTPReq) tlsHandshakeDone(tlsState tls.ConnectionState, err error
 		tlsTrace.PeerCerts = append(tlsTrace.PeerCerts, x509ToPeerCert(unknownAuthErr.Cert))
 	} else {
 		for _, peer := range tlsState.PeerCertificates {
-			tlsTrace.PeerCerts = append(tlsTrace.PeerCerts, PeerCert{
-				Subject:   peer.Subject.String(),
-				Issuer:    peer.Issuer.String(),
-				NotBefore: Timestamp{Abs: peer.NotBefore},
-				NotAfter:  Timestamp{Abs: peer.NotAfter},
-				IsCA:      peer.IsCA,
-			})
+			tlsTrace.PeerCerts = append(tlsTrace.PeerCerts, x509ToPeerCert(peer))
 		}
 	}
 	t.tracer.publishTrace(tlsTrace)

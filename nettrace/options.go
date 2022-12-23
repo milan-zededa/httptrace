@@ -67,7 +67,7 @@ func (o *WithDNSQueryTrace) isTraceOpt() {}
 // as an argument may expect that Transport is of type http.Transport (the standard
 // implementation). In such cases, it is necessary to disable HTTP request tracing.
 // As an unfortunate side effect, HTTPTrace returned by HTTPClient will also miss
-// TLSTunnels, which it has no way of capturing anymore.
+// TLSTunnels, which it has no way of capturing them anymore.
 type WithHTTPReqTrace struct {
 	// HeaderFields : specify how HTTP header fields should be recorded.
 	HeaderFields HdrFieldsOpt

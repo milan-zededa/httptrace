@@ -96,7 +96,7 @@ type HTTPClientCfg struct {
 	// queried. If the callback returns true, the server is skipped and the resolver
 	// moves to the next one.
 	// When all available DNS servers are skipped, DNS query will fail and error
-	// AllNameserversSkipped will be recorded in the networkTrace under DNSQueryTrace.DNSQueryErr
+	// AllNameserversSkipped will be recorded in the networkTrace under DialTrace.DialErr
 	SkipNameserver NameserverSelector
 	// Proxy specifies a callback to return an address of a network proxy that
 	// should be used for an HTTP request targeted at the given URL.

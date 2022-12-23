@@ -1,6 +1,6 @@
 package nettrace
 
-// networkTrace is a generic type used only internally to record and publish any network networkTrace.
+// networkTrace is a generic type used only internally to record and publish any network trace.
 type networkTrace interface {
 	isNetworkTrace()
 }
@@ -10,7 +10,7 @@ type networkTrace interface {
 type networkTracer interface {
 	// Get ID assigned to the tracer itself.
 	getTracerID() TraceID
-	// Get timestamp for the current time relative to when racing started.
+	// Get timestamp for the current time relative to when tracing started.
 	getRelTimestamp() Timestamp
 	// Publish newly recorded networkTrace into the queue for processing.
 	publishTrace(networkTrace)

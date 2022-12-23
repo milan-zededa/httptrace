@@ -57,7 +57,7 @@ import (
 )
 
 const (
-	destURL   = "https://www.dekona.com/"
+	destURL   = "https://www.google.com/"
 	localIP   = /*"192.168.88.2"*/ "192.168.99.1"
 	httpVer   = 2  // 1 or 2
 	proxy     = "" //https://10.10.10.101:9091"
@@ -78,6 +78,11 @@ func main() {
 		PreferHTTP2:    httpVer == 2,
 		SourceIP:       net.ParseIP(localIP),
 		SkipNameserver: nil,
+		/*
+			func(ipAddr net.IP, port uint16) (skip bool, reason string) {
+				return true, "do not like this name server"
+			},
+		*/
 		Proxy: func(reqURL *url.URL) (*url.URL, error) {
 			if proxy == "" {
 				return nil, nil
