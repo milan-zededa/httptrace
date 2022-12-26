@@ -245,6 +245,16 @@ func (nd *NetDumper) PublishHTTPTrace(topic string,
 			})
 		}
 	}
+	var iptables = []string{"raw", "filter", "mangle", "nat"}
+	for _, iptable := range iptables {
+		cmd := exec.Command("iptables", "-L", "-v", "-n", "--line-numbers", "-t", iptable)
+		if output, err := cmd.CombinedOutput(); err == nil {
+			files = append(files, fileForTar{
+				dstPath: fmt.Sprintf("linux/iptables-%s.txt", iptable),
+				content: strings.NewReader(string(output)),
+			})
+		}
+	}
 
 	// Remove the oldest network dump if needed to avoid exceeding the count limit.
 	if nd.MaxDumpsPerTopic > 0 {

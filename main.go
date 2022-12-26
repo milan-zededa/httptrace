@@ -31,8 +31,7 @@ sudo iptables -t nat -A POSTROUTING -o <out-iface> -j MASQUERADE
 
 -> Run httptrace:
 
-go build -v .
-sudo ip netns exec httptrace ./httptrace
+go build -v . && sudo ip netns exec httptrace ./httptrace
 */
 package main
 
