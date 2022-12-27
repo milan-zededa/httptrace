@@ -1,4 +1,12 @@
+// Copyright (c) 2022 Zededa, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package nettrace
+
+import (
+	"fmt"
+	"os"
+)
 
 // TraceOpt allows to customize tracing of network events.
 type TraceOpt interface {
@@ -24,17 +32,48 @@ func (o *WithLogging) isTraceOpt() {}
 type Logger interface {
 	// Tracef : formatted log message with info useful for finer-grained debugging.
 	Tracef(format string, args ...interface{})
-	// Noticef : formatted log message with info useful for debugging.
-	Noticef(format string, args ...interface{})
+	// Debugf : formatted log message with info useful for debugging.
+	Debugf(format string, args ...interface{})
+	// Infof : formatted log message with a general info about what's going on
+	// inside the application.
+	Infof(format string, args ...interface{})
 	// Warningf : formatted log message with a warning.
 	Warningf(format string, args ...interface{})
 	// Errorf : formatted log message with an error.
 	Errorf(format string, args ...interface{})
 	// Fatalf : formatted log message with an error, ending with a call to os.Exit()
-	// with non-zero return value.
+	// with a non-zero return value.
 	Fatalf(format string, args ...interface{})
 	// Panicf : formatted log message with an error, raising a panic.
 	Panicf(format string, args ...interface{})
+}
+
+// nilLogger is used internally when logging should be disabled.
+type nilLogger struct{}
+
+// Tracef does nothing here.
+func (sl *nilLogger) Tracef(format string, args ...interface{}) {}
+
+// Debugf does nothing here.
+func (sl *nilLogger) Debugf(format string, args ...interface{}) {}
+
+// Infof does nothing here.
+func (sl *nilLogger) Infof(format string, args ...interface{}) {}
+
+// Warningf does nothing here.
+func (sl *nilLogger) Warningf(format string, args ...interface{}) {}
+
+// Errorf does nothing here.
+func (sl *nilLogger) Errorf(format string, args ...interface{}) {}
+
+// Fatalf exits the application without logging anything.
+func (sl *nilLogger) Fatalf(format string, args ...interface{}) {
+	os.Exit(1)
+}
+
+// Panicf raises the panic without logging anything.
+func (sl *nilLogger) Panicf(format string, args ...interface{}) {
+	panic(fmt.Sprintf(format, args...))
 }
 
 // WithConntrack : obtain and include conntrack entries (provided by netfilter)

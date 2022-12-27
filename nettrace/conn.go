@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Zededa, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package nettrace
 
 import (
@@ -17,8 +20,6 @@ type tracedConn struct {
 	log          Logger
 	forResolver  bool
 	withDNSTrace bool
-	bytesSent    uint64
-	bytesRecv    uint64
 }
 
 // socketOpTrace is published for every socket read/write operation.

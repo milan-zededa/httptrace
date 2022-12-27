@@ -1,8 +1,10 @@
+// Copyright (c) 2022 Zededa, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package nettrace
 
 import (
 	"context"
-	"golang.org/x/net/bpf"
 	"net"
 	"sync"
 	"syscall"
@@ -12,6 +14,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/packetcap/go-pcap"
 	"github.com/ti-mo/conntrack"
+	"golang.org/x/net/bpf"
 )
 
 // packetCapturer captures packets for a network tracer (e.g. HTTPClient).
@@ -175,7 +178,7 @@ func (pc *packetCapturer) clearPcap() {
 
 func (pc *packetCapturer) startPcap(ctx context.Context, wg *sync.WaitGroup) error {
 	// tcpdump -dd 'icmp or arp or tcp or udp'
-	withTcpPayload := []bpf.RawInstruction{
+	withTCPPayload := []bpf.RawInstruction{
 		{Op: 0x28, Jt: 0, Jf: 0, K: 0x0000000c},
 		{Op: 0x15, Jt: 0, Jf: 3, K: 0x00000800},
 		{Op: 0x30, Jt: 0, Jf: 0, K: 0x00000017},
@@ -197,7 +200,7 @@ func (pc *packetCapturer) startPcap(ctx context.Context, wg *sync.WaitGroup) err
 	//   - ip[2:2] is the Total Length of the IP packet
 	//   - ((ip[0]&0xf)<<2) is Internet Header Length size of IP header
 	//   - ((tcp[12]&0xf0)>>2) is the Data offset of the TCP Segment Header
-	withoutTcpPayload := []bpf.RawInstruction{
+	withoutTCPPayload := []bpf.RawInstruction{
 		{Op: 0x28, Jt: 0, Jf: 0, K: 0x0000000c},
 		{Op: 0x15, Jt: 0, Jf: 20, K: 0x00000800},
 		{Op: 0x30, Jt: 0, Jf: 0, K: 0x00000017},
@@ -230,9 +233,9 @@ func (pc *packetCapturer) startPcap(ctx context.Context, wg *sync.WaitGroup) err
 		{Op: 0x6, Jt: 0, Jf: 0, K: 0x00040000},
 		{Op: 0x6, Jt: 0, Jf: 0, K: 0x00000000},
 	}
-	bpfFilter := withTcpPayload
+	bpfFilter := withTCPPayload
 	if pc.opts.TCPWithoutPayload {
-		bpfFilter = withoutTcpPayload
+		bpfFilter = withoutTCPPayload
 	}
 	pcapHandles := make([]*pcap.Handle, 0, len(pc.opts.Interfaces))
 	for _, ifName := range pc.opts.Interfaces {
@@ -248,14 +251,13 @@ func (pc *packetCapturer) startPcap(ctx context.Context, wg *sync.WaitGroup) err
 		pcapHandles = append(pcapHandles, pcapHandle)
 	}
 	for i, pcapHandle := range pcapHandles {
-		ifName := pc.opts.Interfaces[i]
-		packetSource := gopacket.NewPacketSource(
-			pcapHandle, layers.LinkType(pcapHandle.LinkType()))
-		packetsCh := packetSource.Packets()
 		wg.Add(1)
-		go func() {
+		go func(pcapHandle *pcap.Handle, ifName string) {
 			defer wg.Done()
 			defer pcapHandle.Close()
+			packetSource := gopacket.NewPacketSource(
+				pcapHandle, layers.LinkType(pcapHandle.LinkType()))
+			packetsCh := packetSource.Packets()
 			pc.log.Tracef(
 				"nettrace: networkTracer id=%s: packet capture started for interface %s\n",
 				pc.tracer.getTracerID(), ifName)
@@ -279,7 +281,7 @@ func (pc *packetCapturer) startPcap(ctx context.Context, wg *sync.WaitGroup) err
 					})
 				}
 			}
-		}()
+		}(pcapHandle, pc.opts.Interfaces[i])
 	}
 	return nil
 }

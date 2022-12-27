@@ -1,19 +1,23 @@
+// Copyright (c) 2022 Zededa, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package nettrace
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcapgo"
-	"github.com/lithammer/shortuuid/v4"
 	"io"
 	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcapgo"
+	"github.com/lithammer/shortuuid/v4"
 )
 
 // PacketCapture is a recording of all/some packets that arrived or left through
@@ -72,7 +76,7 @@ type NetTrace struct {
 	TraceBeginAt Timestamp `json:"traceBeginAt"`
 	// TraceEndAt : time (relative to TraceBeginAt) when the tracing ended.
 	TraceEndAt Timestamp `json:"traceEndAt"`
-	// Dials : all atempts to establish connection with a remote endpoint.
+	// Dials : all attempts to establish connection with a remote endpoint.
 	Dials DialTraces `json:"dials"`
 	// TCPConns : all established or failed TCP connections.
 	TCPConns TCPConnTraces `json:"tcpConns"`
@@ -631,7 +635,7 @@ type Timestamp struct {
 
 // Undefined returns true when timestamp is not defined.
 func (t Timestamp) Undefined() bool {
-	return t.IsRel == false && t.Abs.IsZero()
+	return !t.IsRel && t.Abs.IsZero()
 }
 
 // Add relative timestamp to absolute timestamp and get absolute timestamp.
@@ -990,21 +994,36 @@ const (
 	// (and are not recognized by the DNS message parser that we use anyway).
 	DNSResTypeUnrecognized DNSResType = iota // 0 is reserved
 
-	DNSResTypeA     DNSResType = 1
-	DNSResTypeNS    DNSResType = 2
+	// DNSResTypeA : 32-bit IPv4 address.
+	DNSResTypeA DNSResType = 1
+	// DNSResTypeNS : Name server record.
+	DNSResTypeNS DNSResType = 2
+	// DNSResTypeCNAME : Canonical name record.
 	DNSResTypeCNAME DNSResType = 5
-	DNSResTypeSOA   DNSResType = 6
-	DNSResTypeWKS   DNSResType = 11
-	DNSResTypePTR   DNSResType = 12
+	// DNSResTypeSOA : Start of [a zone of] authority record.
+	DNSResTypeSOA DNSResType = 6
+	// DNSResTypeWKS : Well-known services supported by a host (obsolete record type).
+	DNSResTypeWKS DNSResType = 11
+	// DNSResTypePTR : Pointer to a canonical name.
+	DNSResTypePTR DNSResType = 12
+	// DNSResTypeHINFO : Host Information.
 	DNSResTypeHINFO DNSResType = 13
+	// DNSResTypeMINFO : Subscriber mailing lists (record type unlikely to be ever adopted).
 	DNSResTypeMINFO DNSResType = 14
-	DNSResTypeMX    DNSResType = 15
-	DNSResTypeTXT   DNSResType = 16
-	DNSResTypeAAAA  DNSResType = 28
-	DNSResTypeSRV   DNSResType = 33
-	DNSResTypeOPT   DNSResType = 41
-	DNSResTypeAXFR  DNSResType = 252
-	DNSResTypeALL   DNSResType = 255
+	// DNSResTypeMX : Mail exchange record.
+	DNSResTypeMX DNSResType = 15
+	// DNSResTypeTXT : Text record.
+	DNSResTypeTXT DNSResType = 16
+	// DNSResTypeAAAA : IPv6 address record.
+	DNSResTypeAAAA DNSResType = 28
+	// DNSResTypeSRV : Service locator.
+	DNSResTypeSRV DNSResType = 33
+	// DNSResTypeOPT : Pseudo-record type needed to support EDNS.
+	DNSResTypeOPT DNSResType = 41
+	// DNSResTypeAXFR : Authoritative Zone Transfer.
+	DNSResTypeAXFR DNSResType = 252
+	// DNSResTypeALL : All cached records.
+	DNSResTypeALL DNSResType = 255
 )
 
 // DNSResTypeToString : convert DNSResType to string representation

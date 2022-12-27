@@ -17,11 +17,12 @@ If an HTTP redirect response code is returned, the whole process is repeated for
 URL.
 
 This can be even more complicated because:
-  - TCP connection can be reused between HTTP requests (HTTP keep-alive)
-  - HTTP client can be configured to use a network proxy. The proxy may listen on HTTP or HTTPs.
-    In the latter case the client would establish TLS tunnel inside a TLS tunnel!
-  - HTTP client can be configured to use a specific source IP address instead of picking 
-    one dynamically based on a routing decision.
+
+- TCP connection can be reused between HTTP requests (HTTP keep-alive)
+- HTTP client can be configured to use a network proxy. The proxy may listen on HTTP or HTTPs.
+  In the latter case the client would establish TLS tunnel inside a TLS tunnel!
+- HTTP client can be configured to use a specific source IP address instead of picking
+  one dynamically based on a routing decision.
 
 Despite all this complexity, there is only one error value returned and available if a request
 fails. Even though the error may [wrap multiple errors][error-wrap] inside, there is often
@@ -51,36 +52,36 @@ for network tracing of some other networking-oriented clients/servers/... writte
 
 Applying nettrace to Golang's HTTP client, the following set of network traces will be collected:
 
-  - record of every HTTP request, including the number of the HTTP version used, HTTP headers
-    (optional), content length, response status code and more.
-  - record of every Dial (see [Transport.DialContext()][http-transport]), with information about 
-    the destination address, static source address if configured, list of nested Dials performed
-    by the resolver, etc.
-  - record of every UDP "connection" (used for name resolution), including the src/dst IP/port
-    4-tuple, conntrack entry (optional), number of payload bytes sent/received, trace of every
-    socket read/write operation (optional).
-  - record of every TCP connection (established or failed to establish), including the src/dst
-    IP/port 4-tuple, conntrack entry (optional), number of payload bytes sent/received,
-    trace for every socket read/write operation (optional), flag informing if the connection
-    was reused, etc.
-  - record of every DNS query<->reply conversation between the resolver and a DNS server (optional)
-  - record of every TLS tunnel (established or failed to establish), including summary of peer
-    certificates (subject, issuer, validity time range), negotiated protocol and cipher suite, etc.
-  - packet capture filtered to contain only packets corresponding to traced HTTP requests (optional)
+- record of every HTTP request, including the number of the HTTP version used, HTTP headers
+  (optional), content length, response status code and more.
+- record of every Dial (see [Transport.DialContext()][http-transport]), with information about
+  the destination address, static source address if configured, list of nested Dials performed
+  by the resolver, etc.
+- record of every UDP "connection" (used for name resolution), including the src/dst IP/port
+  4-tuple, conntrack entry (optional), number of payload bytes sent/received, trace of every
+  socket read/write operation (optional).
+- record of every TCP connection (established or failed to establish), including the src/dst
+  IP/port 4-tuple, conntrack entry (optional), number of payload bytes sent/received,
+  trace for every socket read/write operation (optional), flag informing if the connection
+  was reused, etc.
+- record of every DNS query<->reply conversation between the resolver and a DNS server (optional)
+- record of every TLS tunnel (established or failed to establish), including summary of peer
+  certificates (subject, issuer, validity time range), negotiated protocol and cipher suite, etc.
+- packet capture filtered to contain only packets corresponding to traced HTTP requests (optional)
 
 These traces reference each other using trace IDs (see [TraceID](./nettrace.go) data type).
-For example, HTTP request trace references recording of the used TCP connection, which then references
-Dial where it has originated from.
+For example, HTTP request trace references recording of the used TCP connection, which then
+references Dial where it has originated from.
 
-Moreover, every trace includes one or more timestamps, used to inform when the given operation began,
-ended, when the [context][context] was closed, etc. These timestamps are recorded relatively
+Moreover, every trace includes one or more timestamps, used to inform when the given operation
+began, ended, when the [context][context] was closed, etc. These timestamps are recorded relatively
 in the milliseconds precision wrt. time when the tracing started for better readability.
 
 Some of these traces are configurable and can be enabled/disabled - see the set of available
 [options](./options.go).
 
-For a full list of available traces and their attributes, see [NetTrace](./nettrace.go) and its extension
-[HTTPTrace](./nettrace.go) (adding HTTP specific network traces).
+For a full list of available traces and their attributes, see [NetTrace](./nettrace.go) and its
+extension [HTTPTrace](./nettrace.go) (adding HTTP specific network traces).
 
 ## How To Use It
 
@@ -138,7 +139,6 @@ but still should call the wrapped Transport for the HTTP request execution.
 An example of this is [Transport from the oauth2 package][oauth2-transp], adding
 an Authorization header with a token.
 
-
 With the client constructed, run one or more HTTP requests (using the embedded `http.Client`)
 and later use `GetTrace()` to obtain collected network traces:
 
@@ -171,6 +171,7 @@ if err != nil {
 }
 fmt.Printf("Network traces collected from the HTTP client: %s\n", string(traceInJson))
 ```
+
 Note that communication with the HTTP server continues until the request fails
 or the returned body is fully read or closed. In other words, prefer getting network
 traces AFTER reading response body.
@@ -626,7 +627,6 @@ structure and can be marshalled into JSON, an example of which is shown below:
   ]
 }
 ```
-
 
 [http-client]: https://pkg.go.dev/net/http#Client
 [http-client-do]: https://pkg.go.dev/net/http#Client.Do

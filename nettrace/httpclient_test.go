@@ -1,3 +1,6 @@
+// Copyright (c) 2022 Zededa, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package nettrace_test
 
 import (
@@ -8,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"example.com/httptrace/nettrace"
+	"github.com/lf-edge/eve/libs/nettrace"
 	. "github.com/onsi/gomega"
+	"github.com/sirupsen/logrus"
 )
 
 func relTimeIsInBetween(t *WithT, timestamp, lowerBound, upperBound nettrace.Timestamp) {
@@ -26,7 +30,9 @@ func TestHTTPTracing(test *testing.T) {
 
 	// Options that do not require administrative privileges.
 	opts := []nettrace.TraceOpt{
-		&nettrace.WithLogging{},
+		&nettrace.WithLogging{
+			CustomLogger: logrus.New(),
+		},
 		&nettrace.WithHTTPReqTrace{
 			HeaderFields: nettrace.HdrFieldsOptWithValues,
 		},
@@ -34,9 +40,9 @@ func TestHTTPTracing(test *testing.T) {
 		&nettrace.WithDNSQueryTrace{},
 	}
 	client, err := nettrace.NewHTTPClient(nettrace.HTTPClientCfg{
-		PreferHTTP2:       true,
-		ReqTimeout:        5 * time.Second,
-		DisableKeepAlives: true,
+		PreferHTTP2:      true,
+		ReqTimeout:       5 * time.Second,
+		DisableKeepAlive: true,
 	}, opts...)
 	t.Expect(err).ToNot(HaveOccurred())
 
@@ -238,9 +244,9 @@ func TestHTTPTracing(test *testing.T) {
 func TestTLSCertErrors(test *testing.T) {
 	t := NewGomegaWithT(test)
 
-	// Options required for TLS tracing.
+	// Option required for TLS tracing.
+	// WithLogging is not specified to test nilLogger.
 	opts := []nettrace.TraceOpt{
-		&nettrace.WithLogging{},
 		&nettrace.WithHTTPReqTrace{},
 	}
 	client, err := nettrace.NewHTTPClient(nettrace.HTTPClientCfg{
@@ -251,6 +257,7 @@ func TestTLSCertErrors(test *testing.T) {
 
 	// Expired certificate
 	req, err := http.NewRequest("GET", "https://expired.badssl.com/", nil)
+	t.Expect(err).ToNot(HaveOccurred())
 	resp, err := client.Do(req)
 	t.Expect(err).To(HaveOccurred())
 	t.Expect(resp).To(BeNil())
@@ -271,6 +278,7 @@ func TestTLSCertErrors(test *testing.T) {
 
 	// Wrong Host
 	req, err = http.NewRequest("GET", "https://wrong.host.badssl.com/", nil)
+	t.Expect(err).ToNot(HaveOccurred())
 	resp, err = client.Do(req)
 	t.Expect(err).To(HaveOccurred())
 	t.Expect(resp).To(BeNil())
@@ -291,6 +299,7 @@ func TestTLSCertErrors(test *testing.T) {
 
 	// Untrusted root
 	req, err = http.NewRequest("GET", "https://untrusted-root.badssl.com/", nil)
+	t.Expect(err).ToNot(HaveOccurred())
 	resp, err = client.Do(req)
 	t.Expect(err).To(HaveOccurred())
 	t.Expect(resp).To(BeNil())
@@ -332,6 +341,7 @@ func TestNonExistentHost(test *testing.T) {
 	t.Expect(err).ToNot(HaveOccurred())
 
 	req, err := http.NewRequest("GET", "https://non-existent-host.com", nil)
+	t.Expect(err).ToNot(HaveOccurred())
 	resp, err := client.Do(req)
 	t.Expect(err).To(HaveOccurred())
 	t.Expect(resp).To(BeNil())
@@ -454,6 +464,7 @@ func TestUnresponsiveDest(test *testing.T) {
 	t.Expect(err).ToNot(HaveOccurred())
 
 	req, err := http.NewRequest("GET", "https://198.51.100.100", nil)
+	t.Expect(err).ToNot(HaveOccurred())
 	resp, err := client.Do(req)
 	t.Expect(err).To(HaveOccurred())
 	t.Expect(resp).To(BeNil())
@@ -537,12 +548,13 @@ func TestReusedTCPConn(test *testing.T) {
 		&nettrace.WithDNSQueryTrace{},
 	}
 	client, err := nettrace.NewHTTPClient(nettrace.HTTPClientCfg{
-		DisableKeepAlives: false, // allow TCP conn to be reused between HTTP requests
+		DisableKeepAlive: false, // allow TCP conn to be reused between HTTP requests
 	}, opts...)
 	t.Expect(err).ToNot(HaveOccurred())
 
 	// First GET request
 	req, err := http.NewRequest("GET", "https://www.example.com", nil)
+	t.Expect(err).ToNot(HaveOccurred())
 	resp, err := client.Do(req)
 	t.Expect(err).ToNot(HaveOccurred())
 	t.Expect(resp).ToNot(BeNil())
@@ -588,6 +600,7 @@ func TestReusedTCPConn(test *testing.T) {
 
 	// Second request to the same destination
 	req, err = http.NewRequest("GET", "https://www.example.com", nil)
+	t.Expect(err).ToNot(HaveOccurred())
 	resp, err = client.Do(req)
 	t.Expect(err).ToNot(HaveOccurred())
 	t.Expect(resp).ToNot(BeNil())

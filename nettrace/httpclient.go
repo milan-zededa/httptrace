@@ -1,10 +1,12 @@
+// Copyright (c) 2022 Zededa, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package nettrace
 
 import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,8 +16,10 @@ import (
 
 	"github.com/golang-design/lockfree"
 	"github.com/mdlayher/netlink"
+	"github.com/sirupsen/logrus"
 	"github.com/ti-mo/conntrack"
 	"golang.org/x/net/http2"
+	"golang.org/x/sys/unix"
 )
 
 // HTTPClient wraps and enhances the standard HTTP client with tracing
@@ -116,9 +120,9 @@ type HTTPClientCfg struct {
 	// TLSHandshakeTimeout specifies the maximum amount of time to wait for a TLS handshake
 	// to complete. Zero means no timeout.
 	TLSHandshakeTimeout time.Duration
-	// DisableKeepAlives, if true, disables HTTP keep-alives and will only use the connection
+	// DisableKeepAlive, if true, disables HTTP keep-alive and will only use the connection
 	// to the server for a single HTTP request.
-	DisableKeepAlives bool
+	DisableKeepAlive bool
 	// DisableCompression, if true, prevents the Transport from requesting compression with
 	// an "Accept-Encoding: gzip" request header when the Request contains no existing
 	// Accept-Encoding value.
@@ -217,13 +221,16 @@ type tlsTun struct {
 func NewHTTPClient(config HTTPClientCfg, traceOpts ...TraceOpt) (*HTTPClient, error) {
 	client := &HTTPClient{
 		id:             IDGenerator(),
-		log:            &noopLogger{},
+		log:            &nilLogger{},
 		sourceIP:       config.SourceIP,
 		skipNameserver: config.SkipNameserver,
 		netProxy:       config.Proxy,
 		pendingTraces:  lockfree.NewQueue(),
 	}
-	client.resetTraces(true) // initialize maps
+	err := client.resetTraces(true) // initialize maps
+	if err != nil {
+		return nil, err
+	}
 	client.tracingCtx, client.cancelTracing = context.WithCancel(context.Background())
 	client.tcpHandshakeTimeout = config.TCPHandshakeTimeout
 	client.httpTransp = &http.Transport{
@@ -231,7 +238,7 @@ func NewHTTPClient(config HTTPClientCfg, traceOpts ...TraceOpt) (*HTTPClient, er
 		DialContext:           client.dial,
 		TLSClientConfig:       config.TLSClientConfig,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
-		DisableKeepAlives:     config.DisableKeepAlives,
+		DisableKeepAlives:     config.DisableKeepAlive,
 		DisableCompression:    config.DisableCompression,
 		MaxIdleConns:          config.MaxIdleConns,
 		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
@@ -246,11 +253,8 @@ func NewHTTPClient(config HTTPClientCfg, traceOpts ...TraceOpt) (*HTTPClient, er
 			return nil, err
 		}
 	}
-	var (
-		err      error
-		withPcap *WithPacketCapture
-		withHTTP *WithHTTPReqTrace
-	)
+	var withPcap *WithPacketCapture
+	var withHTTP *WithHTTPReqTrace
 	for _, traceOpt := range traceOpts {
 		if topt, withDefaults := traceOpt.(TraceOptWithDefaults); withDefaults {
 			topt.setDefaults()
@@ -260,7 +264,7 @@ func NewHTTPClient(config HTTPClientCfg, traceOpts ...TraceOpt) (*HTTPClient, er
 			if opt.CustomLogger != nil {
 				client.log = opt.CustomLogger
 			} else {
-				client.log = newSirupsenLogger()
+				client.log = logrus.New()
 			}
 		case *WithConntrack:
 			client.nfConn, err = conntrack.Dial(&netlink.Config{})

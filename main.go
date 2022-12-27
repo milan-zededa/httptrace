@@ -88,8 +88,8 @@ func main() {
 			}
 			return url.Parse(proxy)
 		},
-		DisableKeepAlives: true, // Do not reuse connections
-		ReqTimeout:        20 * time.Second,
+		DisableKeepAlive: true, // Do not reuse connections
+		ReqTimeout:       20 * time.Second,
 		//TCPHandshakeTimeout: 5 * time.Second,
 	}
 	if proxyCert != "" {
