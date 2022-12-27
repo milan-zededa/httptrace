@@ -224,7 +224,7 @@ func (nd *NetDumper) PublishHTTPTrace(topic string,
 	}
 
 	// Capture and add into the archive some config/state data from the Linux network stack.
-	if output, err := exec.Command("ifconfig").CombinedOutput(); err == nil {
+	if output, err := exec.Command("ifconfig", "-v").CombinedOutput(); err == nil {
 		files = append(files, fileForTar{
 			dstPath: "linux/ifconfig.txt",
 			content: strings.NewReader(string(output)),
@@ -236,7 +236,7 @@ func (nd *NetDumper) PublishHTTPTrace(topic string,
 			content: strings.NewReader(string(output)),
 		})
 	}
-	if output, err := exec.Command("arp", "-a").CombinedOutput(); err == nil {
+	if output, err := exec.Command("arp", "-e", "-n").CombinedOutput(); err == nil {
 		files = append(files, fileForTar{
 			dstPath: "linux/arp.txt",
 			content: strings.NewReader(string(output)),
