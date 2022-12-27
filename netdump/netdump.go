@@ -18,6 +18,13 @@ import (
 const (
 	// Directory where network dumps are persistently stored for later analysis.
 	netdumpDir = "/persist/netdump"
+
+	// The layout should be such that string ordering corresponds to the time ordering.
+	// Avoid characters which are not suitable for filenames (across all OSes).
+	netdumpTimestampFormat = "2006-01-02T15-04-05"
+
+	// Netdumps are wrapped inside Tar GZ Files.
+	netdumpExtension = ".tgz"
 )
 
 // NetDumper publishes (writes to /persist/netdump) tar.gz archives containing network
@@ -87,6 +94,34 @@ func init() {
 	}
 }
 
+// LastPublishAt returns timestamp of the last publish for the given topic.
+// Returns zero timestamp (and nil error) if nothing has been published yet.
+func (nd *NetDumper) LastPublishAt(topic string) (time.Time, error) {
+	// ReadDir returns files sorted in the ascending order
+	// (with our filename layout this means starting with the oldest).
+	dirEntries, err := os.ReadDir(netdumpDir)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("netdump: failed to list directory %s: %w",
+			netdumpDir, err)
+	}
+	tarPrefix := topic + "-"
+	for i := len(dirEntries) - 1; i >= 0; i-- {
+		name := dirEntries[i].Name()
+		if strings.HasPrefix(name, tarPrefix) &&
+			strings.HasSuffix(name, netdumpExtension) {
+			timeStr := strings.TrimPrefix(name, tarPrefix)
+			timeStr = strings.TrimSuffix(timeStr, netdumpExtension)
+			timestamp, err := time.ParseInLocation(netdumpTimestampFormat, timeStr, time.UTC)
+			if err != nil {
+				return time.Time{}, fmt.Errorf("netdump: failed to parse timestamp %s: %w",
+					timeStr, err)
+			}
+			return timestamp, nil
+		}
+	}
+	return time.Time{}, nil
+}
+
 // PublishHTTPTrace : publish HTTP trace obtained from a traced HTTP client,
 // potentially also accompanied by a packet capture for some uplink interfaces.
 // NetDumper will add some additional information into the dump, such as the current
@@ -100,14 +135,10 @@ func (nd *NetDumper) PublishHTTPTrace(topic string,
 	trace nettrace.HTTPTrace, pcaps []nettrace.PacketCapture) (filepath string, err error) {
 
 	// Generate name for the network dump.
-	// The layout should be such that string ordering corresponds to the time ordering.
-	// Avoid characters which are not suitable for filenames (across all OSes).
-	const timestampFormat = "2006-01-02T15-04-05"
-	const extension = ".tgz"
 	timestamp := time.Now().UTC()
 	tarPrefix := topic + "-"
 	tarFilename := fmt.Sprintf("%s%s%s",
-		tarPrefix, timestamp.Format(timestampFormat), extension)
+		tarPrefix, timestamp.Format(netdumpTimestampFormat), netdumpExtension)
 	filepath = path.Join(netdumpDir, tarFilename)
 
 	// Create directories inside the archive and add the HTTP trace.
@@ -266,7 +297,8 @@ func (nd *NetDumper) PublishHTTPTrace(topic string,
 		var publishedDumps []string
 		for _, dirEntry := range dirEntries {
 			name := dirEntry.Name()
-			if strings.HasPrefix(name, tarPrefix) && strings.HasSuffix(name, extension) {
+			if strings.HasPrefix(name, tarPrefix) &&
+				strings.HasSuffix(name, netdumpExtension) {
 				publishedDumps = append(publishedDumps, name)
 			}
 		}
@@ -284,6 +316,10 @@ func (nd *NetDumper) PublishHTTPTrace(topic string,
 	}
 
 	// Write network dump into the persist partition.
+	if err = os.MkdirAll(netdumpDir, 0755); err != nil {
+		return "", fmt.Errorf("netdump: failed to create directory %s: %w",
+			netdumpDir, err)
+	}
 	err = createTarGz(filepath, files)
 	if err != nil {
 		// Error is already formatted with "netdump:" prefix by createTarGz.

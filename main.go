@@ -194,8 +194,16 @@ func main() {
 		}
 	}
 
+	const topic = "test"
 	netDumper := &netdump.NetDumper{MaxDumpsPerTopic: 5}
-	filename, err := netDumper.PublishHTTPTrace("test", httpTrace, pcaps)
+	lastPublish, err := netDumper.LastPublishAt(topic)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	fmt.Printf("Last netdump publish was at %v, %v ago\n", lastPublish,
+		time.Now().Sub(lastPublish))
+	filename, err := netDumper.PublishHTTPTrace(topic, httpTrace, pcaps)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
