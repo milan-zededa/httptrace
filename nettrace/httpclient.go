@@ -41,13 +41,14 @@ type HTTPClient struct {
 	httpTransp *http.Transport
 
 	// From the constructor config
-	log                 Logger
-	sourceIP            net.IP
-	skipNameserver      NameserverSelector
-	netProxy            func(reqURL *url.URL) (*url.URL, error)
-	withSockTrace       bool
-	withDNSTrace        bool
-	tcpHandshakeTimeout time.Duration
+	log                  Logger
+	sourceIP             net.IP
+	skipNameserver       NameserverSelector
+	netProxy             func(req *http.Request) (*url.URL, error)
+	withSockTrace        bool
+	withDNSTrace         bool
+	tcpHandshakeTimeout  time.Duration
+	tcpKeepAliveInterval time.Duration
 
 	// Network tracing
 	nfConn           *conntrack.Conn
@@ -99,13 +100,12 @@ type HTTPClientCfg struct {
 	// The callback is called for every configured DNS server just before it is
 	// queried. If the callback returns true, the server is skipped and the resolver
 	// moves to the next one.
-	// When all available DNS servers are skipped, DNS query will fail and error
-	// AllNameserversSkipped will be recorded in the networkTrace under DialTrace.DialErr
+	// Every skipped nameserver is recorded in DialTrace.SkippedNameservers.
 	SkipNameserver NameserverSelector
 	// Proxy specifies a callback to return an address of a network proxy that
-	// should be used for an HTTP request targeted at the given URL.
+	// should be used for the given HTTP request.
 	// If Proxy is nil or returns a nil *URL, no proxy is used.
-	Proxy func(reqURL *url.URL) (*url.URL, error)
+	Proxy func(*http.Request) (*url.URL, error)
 	// TLSClientConfig specifies the TLS configuration to use for TLS tunnels.
 	// If nil, the default configuration is used.
 	TLSClientConfig *tls.Config
@@ -117,6 +117,11 @@ type HTTPClientCfg struct {
 	// TCPHandshakeTimeout specifies the maximum amount of time to wait for a TCP handshake
 	// to complete. Zero means no timeout.
 	TCPHandshakeTimeout time.Duration
+	// TCPKeepAliveInterval specifies the interval between keep-alive probes for an active
+	// TCP connection. If zero, keep-alive probes are sent with a default value (15 seconds),
+	// if supported by the operating system.
+	// If negative, keep-alive probes are disabled.
+	TCPKeepAliveInterval time.Duration
 	// TLSHandshakeTimeout specifies the maximum amount of time to wait for a TLS handshake
 	// to complete. Zero means no timeout.
 	TLSHandshakeTimeout time.Duration
@@ -146,19 +151,12 @@ type HTTPClientCfg struct {
 	// response headers after fully writing the request (including its body, if any).
 	// This time does not include the time to read the response body.
 	ResponseHeaderTimeout time.Duration
-}
-
-// AllNameserversSkipped is returned in DialTrace.DialErr when all configured
-// DNS servers are skipped as decided by the HTTPClientCfg.SkipNameserver callback.
-// Note that there must be at least one skipped nameserver - if the system has no DNS
-// server configured, a different error is returned (from the standard net package).
-type AllNameserversSkipped struct {
-	Nameservers []string // [ip:port]
-}
-
-// Error message.
-func (e *AllNameserversSkipped) Error() string {
-	return fmt.Sprintf("all DNS servers were skipped: %v", e.Nameservers)
+	// ExpectContinueTimeout, if non-zero, specifies the amount of time to wait for a server's
+	// first response headers after fully writing the request headers if the request has an
+	// "Expect: 100-continue" header. Zero means no timeout and causes the body to be sent
+	// immediately, without waiting for the server to approve.
+	// This time does not include the time to send the request header.
+	ExpectContinueTimeout time.Duration
 }
 
 // AF_INET socket.
@@ -233,6 +231,7 @@ func NewHTTPClient(config HTTPClientCfg, traceOpts ...TraceOpt) (*HTTPClient, er
 	}
 	client.tracingCtx, client.cancelTracing = context.WithCancel(context.Background())
 	client.tcpHandshakeTimeout = config.TCPHandshakeTimeout
+	client.tcpKeepAliveInterval = config.TCPKeepAliveInterval
 	client.httpTransp = &http.Transport{
 		Proxy:                 client.proxyForRequest,
 		DialContext:           client.dial,
@@ -246,6 +245,7 @@ func NewHTTPClient(config HTTPClientCfg, traceOpts ...TraceOpt) (*HTTPClient, er
 		IdleConnTimeout:       config.IdleConnTimeout,
 		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
 		ForceAttemptHTTP2:     config.PreferHTTP2,
+		ExpectContinueTimeout: config.ExpectContinueTimeout,
 	}
 	if config.PreferHTTP2 {
 		err := http2.ConfigureTransport(client.httpTransp)
@@ -676,12 +676,15 @@ func (c *HTTPClient) processPendingTraces(dropAll bool) {
 			if t.ctxClosed {
 				dial.CtxCloseAt = t.CtxCloseAt
 				continue
+			} else if t.justBegan {
+				dial.httpReqID = t.httpReqID
+				dial.DialBeginAt = t.DialBeginAt
+				dial.SourceIP = t.SourceIP
+				dial.DstAddress = t.DstAddress
+				continue
 			} else {
 				dial.httpReqID = t.httpReqID
-				// Do not overwrite AllNameserversSkipped if set in dial.DialErr.
-				if dial.DialErr == "" {
-					dial.DialErr = t.DialErr
-				}
+				dial.DialErr = t.DialErr
 				dial.DialBeginAt = t.DialBeginAt
 				dial.DialEndAt = t.DialEndAt
 				dial.EstablishedConn = t.EstablishedConn
@@ -765,11 +768,8 @@ func (c *HTTPClient) processPendingTraces(dropAll bool) {
 			}
 
 		case resolverCloseTrace:
-			if len(t.skippedServers) > 0 && len(t.triedServers) == 0 {
-				dial := c.getOrAddDialTrace(t.parentDial)
-				err := &AllNameserversSkipped{Nameservers: t.skippedServers}
-				dial.DialErr = err.Error()
-			}
+			dial := c.getOrAddDialTrace(t.parentDial)
+			dial.SkippedNameservers = t.skippedServers
 
 		case socketOpTrace:
 			if connection := c.connections[t.connID]; connection != nil {
@@ -946,12 +946,12 @@ func (c *HTTPClient) proxyForRequest(req *http.Request) (*url.URL, error) {
 	if c.netProxy == nil {
 		return nil, nil
 	}
-	return c.netProxy(req.URL)
+	return c.netProxy(req)
 }
 
 func (c *HTTPClient) dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	dialer := newTracedDialer(c, c.log, c.sourceIP, c.tcpHandshakeTimeout,
-		c.withDNSTrace, c.skipNameserver)
+		c.tcpKeepAliveInterval, c.withDNSTrace, c.skipNameserver)
 	return dialer.dial(ctx, network, addr)
 }
 

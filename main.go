@@ -82,7 +82,7 @@ func main() {
 				return true, "do not like this name server"
 			},
 		*/
-		Proxy: func(reqURL *url.URL) (*url.URL, error) {
+		Proxy: func(reqURL *http.Request) (*url.URL, error) {
 			if proxy == "" {
 				return nil, nil
 			}
@@ -194,16 +194,21 @@ func main() {
 		}
 	}
 
-	const topic = "test"
+	const topic1 = "test"
+	const topic2 = "test2"
 	netDumper := &netdump.NetDumper{MaxDumpsPerTopic: 5}
-	lastPublish, err := netDumper.LastPublishAt(topic)
+	lastPublish, err := netDumper.LastPublishAt(topic1, topic2)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 	fmt.Printf("Last netdump publish was at %v, %v ago\n", lastPublish,
 		time.Now().Sub(lastPublish))
-	filename, err := netDumper.PublishHTTPTrace(topic, httpTrace, pcaps)
+	filename, err := netDumper.Publish(topic1, netdump.TracedNetRequest{
+		RequestName:    "single-http-req",
+		NetTrace:       httpTrace,
+		PacketCaptures: pcaps,
+	})
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)

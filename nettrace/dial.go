@@ -16,14 +16,15 @@ import (
 // tracedDialer publishes traces from TCP/UDP dialing.
 // Should be used only for one dial call (i.e. create new instance for every call).
 type tracedDialer struct {
-	dialID           TraceID
-	log              Logger
-	tracer           tracerWithDial
-	tfd              *tracedFD
-	sourceIP         net.IP
-	handshakeTimeout time.Duration
-	withDNSTrace     bool
-	skipNameserver   NameserverSelector
+	dialID            TraceID
+	log               Logger
+	tracer            tracerWithDial
+	tfd               *tracedFD
+	sourceIP          net.IP
+	handshakeTimeout  time.Duration
+	keepAliveInterval time.Duration
+	withDNSTrace      bool
+	skipNameserver    NameserverSelector
 }
 
 // tracedResolver publishes traces from nameserver dialing.
@@ -53,11 +54,12 @@ type tracerWithDial interface {
 type dialTrace struct {
 	DialTrace
 	conn      net.Conn
+	justBegan bool // read only TraceID, DialBeginAt, DstAddress, httpReqID, SourceIP
 	ctxClosed bool // read only TraceID and CtxCloseAt
 	httpReqID TraceID
 }
 
-func (dialTrace) isNetworkTrace() {}
+func (dialTrace) isInternalNetTrace() {}
 
 // Trace published after every attempt to dial a nameserver.
 type resolverDialTrace struct {
@@ -71,7 +73,7 @@ type resolverDialTrace struct {
 	connID      TraceID
 }
 
-func (resolverDialTrace) isNetworkTrace() {}
+func (resolverDialTrace) isInternalNetTrace() {}
 
 // Sent by the resolver at the end of its use.
 type resolverCloseTrace struct {
@@ -80,10 +82,10 @@ type resolverCloseTrace struct {
 	triedServers   []string
 }
 
-func (resolverCloseTrace) isNetworkTrace() {}
+func (resolverCloseTrace) isInternalNetTrace() {}
 
 func newTracedDialer(tracer tracerWithDial, log Logger, sourceIP net.IP,
-	handshakeTimeout time.Duration, withDNSTrace bool,
+	handshakeTimeout, keepAliveInterval time.Duration, withDNSTrace bool,
 	skipNameserver NameserverSelector) *tracedDialer {
 	dialID := IDGenerator()
 	return &tracedDialer{
@@ -94,10 +96,11 @@ func newTracedDialer(tracer tracerWithDial, log Logger, sourceIP net.IP,
 			tracer: tracer,
 			dialID: dialID,
 		},
-		sourceIP:         sourceIP,
-		handshakeTimeout: handshakeTimeout,
-		withDNSTrace:     withDNSTrace,
-		skipNameserver:   skipNameserver,
+		sourceIP:          sourceIP,
+		handshakeTimeout:  handshakeTimeout,
+		keepAliveInterval: keepAliveInterval,
+		withDNSTrace:      withDNSTrace,
+		skipNameserver:    skipNameserver,
 	}
 }
 
@@ -113,7 +116,7 @@ func (td *tracedDialer) dial(ctx context.Context, network, address string) (net.
 	}
 	resolver := &tracedResolver{caller: td}
 	netDialer := net.Dialer{Resolver: resolver.netResolver(), Control: td.tfd.controlFD,
-		LocalAddr: sourceAddr, Timeout: td.handshakeTimeout}
+		LocalAddr: sourceAddr, Timeout: td.handshakeTimeout, KeepAlive: td.keepAliveInterval}
 
 	// Monitor context for closure.
 	go func() {
@@ -134,13 +137,16 @@ func (td *tracedDialer) dial(ctx context.Context, network, address string) (net.
 			DialBeginAt: td.tracer.getRelTimestamp(),
 			DstAddress:  address,
 		},
+		justBegan: true,
 		httpReqID: getHTTPReqID(ctx),
 	}
 	if td.sourceIP != nil {
 		dial.SourceIP = td.sourceIP.String()
 	}
+	td.tracer.publishTrace(dial)
 	conn, err := netDialer.DialContext(ctx, network, address)
 	resolver.close()
+	dial.justBegan = false
 	dial.DialEndAt = td.tracer.getRelTimestamp()
 	if err != nil {
 		dial.DialErr = err.Error()
@@ -181,7 +187,7 @@ func (tr *tracedResolver) dial(ctx context.Context, network, address string) (ne
 			if !stringListContains(tr.skippedServers, address) {
 				tr.skippedServers = append(tr.skippedServers, address)
 			}
-			return nil, fmt.Errorf("skipping nameserver %s: %s", address, reason)
+			return nil, fmt.Errorf("skipped nameserver %s: %s", address, reason)
 		}
 	}
 

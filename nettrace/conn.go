@@ -30,7 +30,7 @@ type socketOpTrace struct {
 	closed bool // true if the socket was closed
 }
 
-func (socketOpTrace) isNetworkTrace() {}
+func (socketOpTrace) isInternalNetTrace() {}
 
 // socketOpTrace is published for every DNS query sent over the connection.
 type dnsQueryTrace struct {
@@ -39,7 +39,7 @@ type dnsQueryTrace struct {
 	connID TraceID
 }
 
-func (dnsQueryTrace) isNetworkTrace() {}
+func (dnsQueryTrace) isInternalNetTrace() {}
 
 // dnsReplyTrace is published for every DNS reply received over the connection.
 type dnsReplyTrace struct {
@@ -48,7 +48,7 @@ type dnsReplyTrace struct {
 	connID TraceID
 }
 
-func (dnsReplyTrace) isNetworkTrace() {}
+func (dnsReplyTrace) isInternalNetTrace() {}
 
 func newTracedConn(tracer networkTracer, connID TraceID, conn net.Conn, log Logger,
 	forResolver, withDNSTrace bool) *tracedConn {

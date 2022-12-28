@@ -5,7 +5,7 @@ package nettrace
 
 // networkTrace is a generic type used only internally to record and publish any network trace.
 type networkTrace interface {
-	isNetworkTrace()
+	isInternalNetTrace()
 }
 
 // networkTracer performs tracing of network operations.

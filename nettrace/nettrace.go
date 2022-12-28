@@ -1,6 +1,9 @@
 // Copyright (c) 2022 Zededa, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// Package nettrace allows to trace (monitor and record a summary of)
+// network operations that happen behind the scenes during e.g. an HTTP
+// request processing as executed by http.Client.
 package nettrace
 
 import (
@@ -67,6 +70,12 @@ func (pc PacketCapture) WriteToFile(filename string) error {
 	return pc.WriteTo(f)
 }
 
+// AnyNetTrace is implemented by NetTrace and all its extensions (like HTTPTrace).
+// Can be used as a data type for methods that accept any kind network trace as an input.
+type AnyNetTrace interface {
+	isNetTrace()
+}
+
 // NetTrace : recording of network operations performed by a client program
 // (e.g. HTTP client).
 type NetTrace struct {
@@ -88,6 +97,8 @@ type NetTrace struct {
 	// TLSTunnels : all opened (or attempted to open) TLS tunnels.
 	TLSTunnels TLSTunnelTraces `json:"tlsTunnels"`
 }
+
+func (NetTrace) isNetTrace() {}
 
 // HTTPTrace : recording of network operations performed by an HTTP client.
 type HTTPTrace struct {
@@ -117,6 +128,10 @@ type DialTrace struct {
 	// ResolverDials : connection attempts made by the resolver towards nameservers with
 	// the aim of resolving <host> from DstAddress.
 	ResolverDials []ResolverDialTrace `json:"resolverDials,omitempty"`
+	// SkippedNameservers : nameservers which were configured in the OS but got skipped
+	// (i.e. not used for DstAddress resolution) based on the user config
+	// (for example using HTTPClientCfg.SkipNameserver).
+	SkippedNameservers []string `json:"skippedNameservers,omitempty"`
 	// SourceIP : source IP address statically configured for the dial request.
 	// Empty if the source IP was not selected statically.
 	SourceIP string `json:"sourceIP,omitempty"`
@@ -599,12 +614,12 @@ var IDGenerator TIDGenerator = AtomicCounterID
 var idCounter uint64
 
 // AtomicCounterID atomically increments integer and returns it as the trace ID
-// in the hexadecimal format and prefixed with "tid-".
+// in the decimal format and prefixed with "tid-".
 // Generated IDs are very concise but guarantee uniqueness only within a single
 // execution of one process (which is the minimum requirement for TraceID).
 func AtomicCounterID() TraceID {
 	id := atomic.AddUint64(&idCounter, 1)
-	return TraceID("tid-" + strconv.FormatUint(id, 16))
+	return TraceID("tid-" + strconv.FormatUint(id, 10))
 }
 
 // ShortUUID can be used as IDGenerator to produce a shorter variant of universally

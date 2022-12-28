@@ -38,6 +38,19 @@ type NetDumper struct {
 	MaxDumpsPerTopic int
 }
 
+// TracedNetRequest : trace and potentially one or more packet captures obtained
+// during a request targeted at a remote endpoint (i.e. carried over the network).
+type TracedNetRequest struct {
+	// RequestName : name of the executed request that had its network operations traced.
+	// It is used as a dirname inside the published netdump.
+	// Avoid characters which are not suitable for filenames (across all OSes).
+	RequestName string
+	// NetTrace : summary of all network operations performed from within the given request.
+	NetTrace nettrace.AnyNetTrace
+	// PacketCaptures obtained for selected interfaces during the request execution.
+	PacketCaptures []nettrace.PacketCapture
+}
+
 type fileToDump struct {
 	srcPath string
 	dstPath string
@@ -94,9 +107,9 @@ func init() {
 	}
 }
 
-// LastPublishAt returns timestamp of the last publish for the given topic.
+// LastPublishAt returns timestamp of the last publication for any of the given topics.
 // Returns zero timestamp (and nil error) if nothing has been published yet.
-func (nd *NetDumper) LastPublishAt(topic string) (time.Time, error) {
+func (nd *NetDumper) LastPublishAt(topics ...string) (time.Time, error) {
 	// ReadDir returns files sorted in the ascending order
 	// (with our filename layout this means starting with the oldest).
 	dirEntries, err := os.ReadDir(netdumpDir)
@@ -104,11 +117,15 @@ func (nd *NetDumper) LastPublishAt(topic string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("netdump: failed to list directory %s: %w",
 			netdumpDir, err)
 	}
-	tarPrefix := topic + "-"
-	for i := len(dirEntries) - 1; i >= 0; i-- {
-		name := dirEntries[i].Name()
-		if strings.HasPrefix(name, tarPrefix) &&
-			strings.HasSuffix(name, netdumpExtension) {
+	var lastPub time.Time
+	for _, topic := range topics {
+		tarPrefix := topic + "-"
+		for i := len(dirEntries) - 1; i >= 0; i-- {
+			name := dirEntries[i].Name()
+			if !strings.HasSuffix(name, netdumpExtension) ||
+				!strings.HasPrefix(name, tarPrefix) {
+				continue
+			}
 			timeStr := strings.TrimPrefix(name, tarPrefix)
 			timeStr = strings.TrimSuffix(timeStr, netdumpExtension)
 			timestamp, err := time.ParseInLocation(netdumpTimestampFormat, timeStr, time.UTC)
@@ -116,23 +133,27 @@ func (nd *NetDumper) LastPublishAt(topic string) (time.Time, error) {
 				return time.Time{}, fmt.Errorf("netdump: failed to parse timestamp %s: %w",
 					timeStr, err)
 			}
-			return timestamp, nil
+			if lastPub.IsZero() || timestamp.After(lastPub) {
+				lastPub = timestamp
+			}
+			break // next topic
 		}
 	}
-	return time.Time{}, nil
+	return lastPub, nil
 }
 
-// PublishHTTPTrace : publish HTTP trace obtained from a traced HTTP client,
-// potentially also accompanied by a packet capture for some uplink interfaces.
-// NetDumper will add some additional information into the dump, such as the current
+// Publish a single netdump archive, containing information such as the current
 // DPCL (DevicePortConfigList), DNS (DeviceNetworkStatus), ifconfig output, DHCP
 // leases, wwan status and more.
+// Additionally, it is possible to attach traces and packet captures recorded
+// during an execution of one or more network requests (i.e. requests targeted
+// at remote endpoints and carried over the network).
 // In order to avoid race conditions between microservices, each microservice
 // should use different topic(s) (e.g. topic = microservice name).
 // Topic name should not contain characters which are not suitable for filenames
 // (across all OSes).
-func (nd *NetDumper) PublishHTTPTrace(topic string,
-	trace nettrace.HTTPTrace, pcaps []nettrace.PacketCapture) (filepath string, err error) {
+func (nd *NetDumper) Publish(topic string,
+	requests ...TracedNetRequest) (filepath string, err error) {
 
 	// Generate name for the network dump.
 	timestamp := time.Now().UTC()
@@ -141,16 +162,8 @@ func (nd *NetDumper) PublishHTTPTrace(topic string,
 		tarPrefix, timestamp.Format(netdumpTimestampFormat), netdumpExtension)
 	filepath = path.Join(netdumpDir, tarFilename)
 
-	// Create directories inside the archive and add the HTTP trace.
-	traceInJson, err := json.MarshalIndent(trace, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("netdump: failed to marshal HTTP trace: %v", err)
-	}
+	// Create directories inside the archive.
 	files := []fileForTar{
-		{
-			dstPath: "pcap",
-			isDir:   true,
-		},
 		{
 			dstPath: "eve",
 			isDir:   true,
@@ -159,30 +172,11 @@ func (nd *NetDumper) PublishHTTPTrace(topic string,
 			dstPath: "linux",
 			isDir:   true,
 		},
-		{
-			dstPath: "nettrace.json",
-			content: strings.NewReader(string(traceInJson)),
-		},
 	}
-
-	// Add PCAPs into the archive.
-	for _, pcap := range pcaps {
-		pcapName := pcap.InterfaceName
-		if pcap.Truncated {
-			pcapName += "-truncated"
-		}
-		if !pcap.WithTCPPayload {
-			pcapName += "-nopayload"
-		}
-		pcapName += ".pcap"
-		buf := new(strings.Builder)
-		err = pcap.WriteTo(buf)
-		if err != nil {
-			return "", fmt.Errorf("netdump: failed to write PCAP %s: %w", pcapName, err)
-		}
+	if len(requests) > 0 {
 		files = append(files, fileForTar{
-			dstPath: path.Join("pcap", pcapName),
-			content: strings.NewReader(buf.String()),
+			dstPath: "requests",
+			isDir:   true,
 		})
 	}
 
@@ -283,6 +277,46 @@ func (nd *NetDumper) PublishHTTPTrace(topic string,
 			files = append(files, fileForTar{
 				dstPath: fmt.Sprintf("linux/iptables-%s.txt", iptable),
 				content: strings.NewReader(string(output)),
+			})
+		}
+	}
+
+	// Attach provided network traces and packet captures.
+	for _, req := range requests {
+		dirName := path.Join("requests", req.RequestName)
+		files = append(files, fileForTar{
+			dstPath: dirName,
+			isDir:   true,
+		})
+		if req.NetTrace != nil {
+			traceInJson, err := json.MarshalIndent(req.NetTrace, "", "  ")
+			if err != nil {
+				err = fmt.Errorf("netdump: failed to marshal nettrace of the request "+
+					"%s: %w", req.RequestName, err)
+				return "", err
+			}
+			files = append(files, fileForTar{
+				dstPath: path.Join(dirName, "nettrace.json"),
+				content: strings.NewReader(string(traceInJson)),
+			})
+		}
+		for _, pcap := range req.PacketCaptures {
+			pcapName := pcap.InterfaceName
+			if pcap.Truncated {
+				pcapName += "-truncated"
+			}
+			if !pcap.WithTCPPayload {
+				pcapName += "-nopayload"
+			}
+			pcapName += ".pcap"
+			buf := new(strings.Builder)
+			err = pcap.WriteTo(buf)
+			if err != nil {
+				return "", fmt.Errorf("netdump: failed to write PCAP %s: %w", pcapName, err)
+			}
+			files = append(files, fileForTar{
+				dstPath: path.Join(dirName, pcapName),
+				content: strings.NewReader(buf.String()),
 			})
 		}
 	}

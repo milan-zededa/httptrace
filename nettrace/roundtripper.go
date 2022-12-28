@@ -65,7 +65,7 @@ type httpConnTrace struct {
 	conn      net.Conn
 }
 
-func (httpConnTrace) isNetworkTrace() {}
+func (httpConnTrace) isInternalNetTrace() {}
 
 // tlsTrace is published when TLS tunnel is established or fails to establish.
 type tlsTrace struct {
@@ -73,7 +73,7 @@ type tlsTrace struct {
 	httpReqID      TraceID
 }
 
-func (tlsTrace) isNetworkTrace() {}
+func (tlsTrace) isInternalNetTrace() {}
 
 // httpReqTrace is published just before RoundTrip is triggered.
 type httpReqTrace struct {
@@ -87,7 +87,7 @@ type httpReqTrace struct {
 	netProxy   string
 }
 
-func (httpReqTrace) isNetworkTrace() {}
+func (httpReqTrace) isInternalNetTrace() {}
 
 // httpRespTrace is published when RoundTrip returns.
 type httpRespTrace struct {
@@ -100,7 +100,7 @@ type httpRespTrace struct {
 	header     HTTPHeader
 }
 
-func (httpRespTrace) isNetworkTrace() {}
+func (httpRespTrace) isInternalNetTrace() {}
 
 func newTracedRoundTripper(
 	forTracer httpClientTracer, opts WithHTTPReqTrace) *tracedRoundTripper {

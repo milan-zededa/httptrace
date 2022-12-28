@@ -25,7 +25,7 @@ type httpBodyTrace struct {
 	eof         bool
 }
 
-func (httpBodyTrace) isNetworkTrace() {}
+func (httpBodyTrace) isInternalNetTrace() {}
 
 func newTracedHTTPBody(httpReqID TraceID, tracer networkTracer, isReq bool,
 	body io.ReadCloser) *tracedHTTPBody {

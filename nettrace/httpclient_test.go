@@ -16,7 +16,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func relTimeIsInBetween(t *WithT, timestamp, lowerBound, upperBound nettrace.Timestamp) {
+func relTimeIsInBetween(t *GomegaWithT, timestamp, lowerBound, upperBound nettrace.Timestamp) {
 	t.Expect(timestamp.IsRel).To(BeTrue())
 	t.Expect(lowerBound.IsRel).To(BeTrue())
 	t.Expect(upperBound.IsRel).To(BeTrue())
@@ -47,6 +47,7 @@ func TestHTTPTracing(test *testing.T) {
 	t.Expect(err).ToNot(HaveOccurred())
 
 	req, err := http.NewRequest("GET", "https://www.example.com", nil)
+	t.Expect(err).ToNot(HaveOccurred())
 	req.Header.Set("Accept", "text/html")
 	resp, err := client.Do(req)
 	t.Expect(err).ToNot(HaveOccurred())
@@ -381,7 +382,7 @@ func TestNonExistentHost(test *testing.T) {
 		dnsMsg := dnsQuery.DNSQueryMsgs[0]
 		relTimeIsInBetween(t, dnsMsg.SentAt, udpConn.SocketCreateAt, udpConn.ConnCloseAt)
 		t.Expect(dnsMsg.Questions).To(HaveLen(1))
-		t.Expect(dnsMsg.Questions[0].Name).To(Equal("non-existent-host.com."))
+		t.Expect(dnsMsg.Questions[0].Name).To(HavePrefix("non-existent-host.com."))
 		t.Expect(dnsMsg.Questions[0].Type).To(Or(
 			Equal(nettrace.DNSResTypeA), Equal(nettrace.DNSResTypeAAAA)))
 		t.Expect(dnsMsg.Truncated).To(BeFalse())
@@ -657,6 +658,55 @@ func TestReusedTCPConn(test *testing.T) {
 	t.Expect(usedTCPConn.ConnCloseAt.Undefined()).To(BeTrue())
 	t.Expect(usedTCPConn.TotalRecvBytes).ToNot(BeZero())
 	t.Expect(usedTCPConn.TotalSentBytes).ToNot(BeZero())
+
+	err = client.Close()
+	t.Expect(err).ToNot(HaveOccurred())
+}
+
+func TestAllNameserversSkipped(test *testing.T) {
+	t := NewWithT(test)
+
+	opts := []nettrace.TraceOpt{
+		&nettrace.WithHTTPReqTrace{},
+		&nettrace.WithDNSQueryTrace{},
+	}
+	client, err := nettrace.NewHTTPClient(nettrace.HTTPClientCfg{
+		SkipNameserver: func(ipAddr net.IP, port uint16) (skip bool, reason string) {
+			return true, "skipping any configured nameserver"
+		},
+	}, opts...)
+	t.Expect(err).ToNot(HaveOccurred())
+
+	req, err := http.NewRequest("GET", "https://www.example.com", nil)
+	t.Expect(err).ToNot(HaveOccurred())
+	resp, err := client.Do(req)
+	t.Expect(err).To(HaveOccurred())
+	t.Expect(resp).To(BeNil())
+
+	trace, _, err := client.GetTrace("GET www.example.com but skip all nameservers")
+	t.Expect(err).ToNot(HaveOccurred())
+
+	// Dial trace
+	t.Expect(trace.Dials).To(HaveLen(1))
+	dial := trace.Dials[0]
+	t.Expect(dial.TraceID).ToNot(BeZero())
+	t.Expect(dial.DstAddress).To(Equal("www.example.com:443"))
+	t.Expect(dial.DialErr).To(ContainSubstring("skipping any configured nameserver"))
+	t.Expect(dial.ResolverDials).To(BeEmpty())
+	t.Expect(dial.SkippedNameservers).ToNot(BeEmpty())
+
+	t.Expect(trace.DNSQueries).To(BeEmpty())
+	t.Expect(trace.UDPConns).To(BeEmpty())
+	t.Expect(trace.TCPConns).To(BeEmpty())
+	t.Expect(trace.TLSTunnels).To(BeEmpty())
+
+	t.Expect(trace.HTTPRequests).To(HaveLen(1))
+	httpReq := trace.HTTPRequests[0]
+	t.Expect(httpReq.TraceID).ToNot(BeZero())
+	t.Expect(httpReq.TCPConn.Undefined()).To(BeTrue())
+	t.Expect(httpReq.ReqMethod).To(Equal("GET"))
+	t.Expect(httpReq.ReqURL).To(Equal("https://www.example.com"))
+	t.Expect(httpReq.ReqError).To(ContainSubstring("skipping any configured nameserver"))
 
 	err = client.Close()
 	t.Expect(err).ToNot(HaveOccurred())
